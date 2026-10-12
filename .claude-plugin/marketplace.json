@@ -1,0 +1,14 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "ui-catalog",
+  "description": "ui-catalog and ui-compose skills.",
+  "owner": { "name": "ui-catalog" },
+  "plugins": [
+    {
+      "name": "ui-catalog",
+      "description": "Extract a component library from a codebase, document and gallery it, compose features from it.",
+      "source": "./",
+      "category": "development"
+    }
+  ]
+}

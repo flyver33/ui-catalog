@@ -1,0 +1,7 @@
+{
+  "name": "ui-catalog",
+  "version": "0.1.0",
+  "description": "Component library for any codebase: extract components, write a guideline per component, render every state in a static HTML gallery — and build features from the library, reporting what is missing instead of inventing it.",
+  "author": { "name": "ui-catalog" },
+  "keywords": ["components", "design-system", "gallery", "documentation", "ui"]
+}

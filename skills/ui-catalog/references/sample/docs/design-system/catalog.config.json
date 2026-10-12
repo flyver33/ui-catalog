@@ -1,0 +1,41 @@
+{
+  "$comment": "Образец ui-catalog: выдуманный проект с одним доделанным компонентом.",
+  "adapter": "html-css",
+  "project": "sample",
+  "styles": [
+    "base/base.css",
+    "base/components.css"
+  ],
+  "tokens": [
+    "base/base.css"
+  ],
+  "icons": null,
+  "scopes": [
+    {
+      "name": "base",
+      "match": "base/**",
+      "library": true
+    },
+    {
+      "name": "page",
+      "match": "pages/**"
+    }
+  ],
+  "showcase": [],
+  "brand": {
+    "logo": null,
+    "title": "Style Guide"
+  },
+  "reference": {
+    "kind": "types",
+    "name": "справочник типов ui-catalog",
+    "source": "references/types.md",
+    "lang": "en"
+  },
+  "exclude": [
+    "**/proto/**"
+  ],
+  "ignoreUnits": [],
+  "classPrefix": null,
+  "editor": "vscode"
+}

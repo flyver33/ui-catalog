@@ -1,0 +1,16 @@
+/* Токены образца. */
+:root {
+  --x-ink: #1b1f2a;
+  --x-white: #ffffff;
+  --x-accent: #2f5bea;
+  --x-accent-hover: #2449c4;
+  --x-accent-active: #1c3aa0;
+  --x-surface: #eef1f6;
+  --x-surface-hover: #e2e7ef;
+  --x-line: #d5dbe5;
+  --x-radius: 8px;
+  --x-font: Arial, sans-serif;
+}
+body { margin: 0; font: 15px/20px var(--x-font); color: var(--x-ink); }
+:focus-visible { outline: 2px solid var(--x-accent); outline-offset: 2px; }
+button { font: inherit; }
