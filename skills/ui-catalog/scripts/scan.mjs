@@ -9,7 +9,7 @@ import { loadConfig, resolveOut, ignoreIds, iconBaseOf } from './lib/config.mjs'
 import { loadLibrary } from './lib/library.mjs';
 import { blindSpots } from './lib/blind-spots.mjs';
 
-export async function runScan(root, outDir, { quiet = false } = {}) {
+export async function runScan(root, outDir, { quiet = false, write = true } = {}) {
   const config = loadConfig(root, outDir);
   if (config.adapter.startsWith('unsupported:')) {
     fail(`Проект на ${config.adapter.split(':')[1]}: адаптер для этого стека ещё не написан.\n` +
@@ -28,7 +28,7 @@ export async function runScan(root, outDir, { quiet = false } = {}) {
   };
   const classes = new Set((result.units || []).flatMap((u) => [u.id, ...Object.keys(u.modifiers || {}), ...Object.keys(u.elements || {})]));
   inventory.blindSpots = blindSpots(root, config, classes);
-  writeJson(path.join(outDir, 'inventory.json'), inventory);
+  if (write) writeJson(path.join(outDir, 'inventory.json'), inventory);
   // A new config gets the icon class family the icon set shares (one setting fewer to guess).
   if (config.__created && config.icons && !config.icons.base && iconBaseOf(config, inventory)) {
     const raw = readJson(config.__file);

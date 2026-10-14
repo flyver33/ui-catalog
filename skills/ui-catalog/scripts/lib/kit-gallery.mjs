@@ -18,6 +18,8 @@ export const emptyBox = (html) => {
   const h = String(html || '').replace(/<link\b[^>]*>/g, '');
   return !h.replace(/<[^>]*>/g, '').trim() && ![...h.matchAll(/<([a-zA-Z][\w-]*)/g)].some((m) => DRAWS.has(m[1].toLowerCase()));
 };
+// Props a caller lays a component out with: the page's, not the component's.
+const LAYOUT_PROPS = /^(className|style)$|(ClassName|Style)$/;
 const SHOWN = /^(show|shown|visible|isVisible|isShown|open|isOpen|opened|expanded|isExpanded)$/;
 // A type that is an array: `T[]`, `Array<T>`, `readonly T[]`, `ReadonlyArray<T>`, or a union of them with null.
 export const arrayType = (text) => {
@@ -41,25 +43,71 @@ const why = (msg) => {
 };
 const failedHtml = (msg) => `<div style="font:13px/1.4 system-ui,sans-serif;color:#b42318;padding:8px 12px;border:1px dashed #f04438;border-radius:6px;background:#fff;max-width:360px">не отрисовался: ${esc(why(msg))}</div>`;
 
+// A prop's expression from a call, computed in the module of the call; a bare name the
+// calling component got as a prop of its own is taken from that component's calls — up to
+// three components up (a translator handed down through a page).
+async function computeProp(renderer, r, call, expr, prop, depth = 0) {
+  const got = renderer.evaluate ? await renderer.evaluate({ file: call.file, line: call.line, expr, name: call.name, prop }) : null;
+  if (got || depth >= 3 || !r) return got;
+  const name = /^\{\s*([A-Za-z_$][\w$]*)\s*\}$/.exec(String(expr))?.[1];
+  if (!name) return null;
+  const owner = (r.components || []).filter((c) => c.file === call.file && c.line <= call.line).sort((a, b) => b.line - a.line)[0];
+  if (!owner || !owner.props.some((p) => p.name === name)) return null;
+  for (const up of (r.calls || []).filter((c) => c.component === `${owner.file}#${owner.name}`)) {
+    const v = up.props?.[name];
+    if (typeof v === 'string' && !v.startsWith('{')) return { value: v };
+    if (typeof v === 'string') { const g = await computeProp(renderer, r, up, v, name, depth + 1); if (g) return g; }
+  }
+  return null;
+}
+
+// The caption of a frame that took props from a story: its texts are a demo's.
+export const FROM_STORY = ' · данные из сторис';
+
 // A component drawn as the code calls it: the literal props and the text of its most telling
-// real call (one that `fits`), the props `set` asks for, a prop that shows it true, and the
-// type's sample for a text prop the code fills from data.
-async function drawComponent(renderer, comp, calls, { fits = () => true, set = {}, sample = '' } = {}) {
-  if (!comp.exported) return { error: `${comp.name} не экспортируется` };
+// real call (one that `fits`), then what the code computes for the call's expressions, the
+// props `set` asks for, a prop that shows it true, what its story gives for the rest, and
+// the type's sample for a text prop the code fills from data.
+async function drawComponent(renderer, comp, calls, { fits = () => true, set = {}, sample = '', r = null } = {}) {
   const said = (c) => !!c.text + Object.keys(c.propTexts || {}).length;
-  const call = calls.filter(fits).sort((m, k) => said(k) - said(m))[0];
-  const props = {};
   const list = new Set(comp.props.filter((p) => arrayType(p.type)).map((p) => p.name));
-  for (const [k, v] of Object.entries(call?.props || {})) {
-    if (/^on[A-Z]|^(key|ref)$/.test(k)) continue;
-    if (v === true) props[k] = true;
-    else if (typeof v === 'string' && !v.startsWith('{')) props[k] = v;
-    // A text said inside an array (`items={[{ label: t('…') }]}`) is not the array.
-    else if (call.propTexts?.[k] && !list.has(k)) props[k] = call.propTexts[k];
+  // The props the code gives for one call: its literals, what it computes, its texts.
+  const fromCall = async (call) => {
+    const out = {};
+    for (const [k, v] of Object.entries(call?.props || {})) {
+      if (/^on[A-Z]|^(key|ref)$/.test(k)) continue;
+      if (v === true) { out[k] = true; continue; }
+      if (typeof v === 'string' && !v.startsWith('{')) { out[k] = v; continue; }
+      // An expression the code computes in the module of the call; a list takes only a list.
+      // A class or a style the caller lays the component out with is the page's: not computed.
+      const got = typeof v === 'string' && !LAYOUT_PROPS.test(k) ? await computeProp(renderer, r, call, v, k) : null;
+      if (got && (!list.has(k) || Array.isArray(got.value))) { out[k] = got.value; continue; }
+      // A text said inside an array (`items={[{ label: t('…') }]}`) is not the array.
+      if (call.propTexts?.[k] && !list.has(k)) out[k] = call.propTexts[k];
+    }
+    return out;
+  };
+  // Of the calls, the one the code gives most of the props the component requires, then the
+  // most telling (its texts), then the one with most props.
+  const needs = new Set(comp.props.filter((p) => !p.optional && p.default === undefined).map((p) => p.name));
+  const score = (got, c) => [Object.keys(got).filter((k) => needs.has(k)).length, said(c), Object.keys(got).length];
+  const better = (x, y) => { for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return x[i] > y[i]; return false; };
+  const ranked = calls.filter(fits).sort((m, k) => said(k) - said(m)).slice(0, 40);
+  let call = ranked[0], props = {}, best = [-1, -1, -1];
+  for (const c of ranked) {
+    const got = await fromCall(c);
+    const sc = score(got, c);
+    if (better(sc, best)) { call = c; props = got; best = sc; }
   }
   Object.assign(props, set);
   // A prop that shows the component: shown, or the frame draws nothing.
   for (const p of comp.props) if (SHOWN.test(p.name) && props[p.name] === undefined) props[p.name] = true;
+  // What the component requires and the code leaves unset, its story may give — never over a
+  // value from the code, never a flag it draws without.
+  let story = false;
+  const fromStory = renderer.storyProps ? await renderer.storyProps({ file: comp.file, name: comp.name }) : null;
+  const required = new Set(comp.props.filter((p) => !p.optional && p.default === undefined).map((p) => p.name));
+  for (const [k, v] of Object.entries(fromStory || {})) if (props[k] === undefined && required.has(k)) { props[k] = v; story = true; }
   // A list the type requires and the call fills from data: empty, or the component throws on `.map`.
   const empty = comp.props.filter((p) => !p.optional && p.default === undefined && props[p.name] === undefined && arrayType(p.type)).map((p) => p.name);
   for (const k of empty) props[k] = [];
@@ -77,7 +125,7 @@ async function drawComponent(renderer, comp, calls, { fits = () => true, set = {
   // Rendered without its data and saying so: not a picture of the component.
   const shown = /\b(undefined|NaN)\b|\[object [A-Z]\w*\]/.exec(String(res.html || '').replace(/<[^>]*>/g, ' '));
   if (!res.error && shown) return { error: `не хватает данных — в тексте «${shown[0]}»` };
-  return { html: res.html, error: res.error };
+  return { html: res.html, error: res.error, story: story && !res.error };
 }
 
 // The stylesheets that define the classes the frames draw (a spinner styled by the
@@ -94,7 +142,7 @@ function frameCss(list, inventory, renderer) {
 export async function kitGalleryComponents({ kit, specs, inventory, renderer, editorHref, mdHref, rebase = (h) => h }) {
   const r = inventory.react || { calls: [] };
   renderer.providers?.(r.components);
-  const out = [];
+  const out = [], failedFrames = [];
   let failed = 0, n = 0;
   for (const a of kit.atoms) {
     const spec = specs.find((c) => c.id === a.id);
@@ -104,11 +152,11 @@ export async function kitGalleryComponents({ kit, specs, inventory, renderer, ed
     const values = p ? p.values.map((v) => ({ id: slug(v.token), name: v.name, v })) : [{ id: 'default', name: a.name, v: null }];
     // One implementation, with its spelling of the value (or none): HTML, or why not.
     const draw = async (i, x) => {
-      let html, error;
+      let html, error, story = false;
       if (i.kind === 'component') {
         // Props from a real call with this value: its literals and its text.
         const fits = (c) => !x || (x.bool ? c.props[x.prop] === true || c.props[x.prop] === '{true}' : c.props[x.prop] === x.token || (x.isDefault && c.props[x.prop] === undefined));
-        ({ html, error } = await drawComponent(renderer, i.comp, r.calls.filter((c) => c.component === i.key), { fits, set: x ? { [x.prop]: x.bool ? true : x.token } : {}, sample }));
+        ({ html, error, story } = await drawComponent(renderer, i.comp, r.calls.filter((c) => c.component === i.key), { fits, set: x ? { [x.prop]: x.bool ? true : x.token } : {}, sample, r }));
       } else {
         const tag = i.kind === 'class' ? i.tag || 'div' : i.name.replace(/[<>]/g, '');
         const cls = i.kind === 'class' ? [i.unit.id, x?.cls].filter(Boolean).join(' ') : '';
@@ -125,8 +173,8 @@ export async function kitGalleryComponents({ kit, specs, inventory, renderer, ed
         }
         html = VOID.has(tag) ? `<${tag}${attrs}>` : `<${tag}${attrs}>${esc(text || sample)}</${tag}>`;
       }
-      if (error) failed++;
-      return { i, html: error ? failedHtml(error) : rebase(html), ok: !error };
+      if (error) { failed++; failedFrames.push({ id: a.id, frame: i.name, why: why(error) }); }
+      return { i, html: error ? failedHtml(error) : rebase(html), ok: !error, story };
     };
     const variants = [];
     for (const val of values) {
@@ -143,7 +191,7 @@ export async function kitGalleryComponents({ kit, specs, inventory, renderer, ed
       if (!frames.length) continue;
       const live = frames.find((f) => f.ok) || frames[0];
       const frame = (f, label, preview, extra = {}) => ({
-        id: `state-${++n}`, label, variant: val.id, preview, name: preview ? val.name : null, about: null, cls: null,
+        id: `state-${++n}`, label: label === f.i.name && f.story ? label + FROM_STORY : label, variant: val.id, preview, name: preview ? val.name : null, about: null, cls: null,
         width: null, height: null, bg: null, pad: null, note: f.i.file ? `${f.i.file}:${f.i.line}` : null, attrs: [], authored: null,
         html: f.html, clean: f.html, noteHref: f.i.file ? editorHref(f.i.file, f.i.line) : null, ...extra,
       });
@@ -156,7 +204,7 @@ export async function kitGalleryComponents({ kit, specs, inventory, renderer, ed
     const shared = [];
     if (p) for (const i of a.impls.filter((i) => !values.some((val) => a.axes[p.axis]?.get(val.v.name)?.impls.has(i.key)))) {
       const f = await draw(i, null);
-      shared.push({ id: `state-${++n}`, label: i.name, variant: null, preview: false, name: null, about: null, cls: null, width: null, height: null, bg: null, pad: null,
+      shared.push({ id: `state-${++n}`, label: f.story ? i.name + FROM_STORY : i.name, variant: null, preview: false, name: null, about: null, cls: null, width: null, height: null, bg: null, pad: null,
         note: i.file ? `${i.file}:${i.line}` : null, attrs: [], authored: null, html: f.html, clean: f.html, noteHref: i.file ? editorHref(i.file, i.line) : null });
     }
     // Where it is used: calls of components, uses of classes, raw elements.
@@ -178,7 +226,7 @@ export async function kitGalleryComponents({ kit, specs, inventory, renderer, ed
     });
   }
   frameCss(out, inventory, renderer);
-  return { components: out, failed };
+  return { components: out, failed, failedFrames };
 }
 
 // The composites: a frame per instance that is a component of its own (the tree an exported
@@ -191,7 +239,7 @@ const NO_OWN = '<div style="font:14px/1.45 system-ui,sans-serif;color:#475467;ma
 export async function compositeGalleryComponents({ patterns, atomIds = new Set(), inventory, renderer, editorHref, mdHref, rebase = (h) => h }) {
   const r = inventory.react || { calls: [], components: [] };
   renderer.providers?.(r.components);
-  const out = [];
+  const out = [], failedFrames = [];
   let failed = 0, n = 0;
   for (const { comp, instances } of patterns) {
     const name = comp.data.name || comp.id;
@@ -207,12 +255,12 @@ export async function compositeGalleryComponents({ patterns, atomIds = new Set()
     own.sort((p, q) => q.calls.length - p.calls.length || p.c.name.localeCompare(q.c.name));
     const drawn = [];
     for (const o of own) {
-      const { html, error } = await drawComponent(renderer, o.c, o.calls);
-      if (error) failed++;
-      drawn.push({ o, html: error ? failedHtml(error) : rebase(html), ok: !error });
+      const { html, error, story } = await drawComponent(renderer, o.c, o.calls, { r });
+      if (error) { failed++; failedFrames.push({ id: comp.id, frame: o.c.name, why: why(error) }); }
+      drawn.push({ o, html: error ? failedHtml(error) : rebase(html), ok: !error, story });
     }
     const frame = (f, preview) => ({
-      id: `cstate-${++n}`, label: f ? f.o.c.name : name, variant: 'default', preview, name: preview ? name : null, about: null, cls: null,
+      id: `cstate-${++n}`, label: f ? f.o.c.name + (f.story ? FROM_STORY : '') : name, variant: 'default', preview, name: preview ? name : null, about: null, cls: null,
       width: f && WIDE_TYPES.has(comp.data.type) ? 'wide' : null, height: null, bg: null, pad: null, note: f ? `${f.o.x.file}:${f.o.x.line}` : null, attrs: [], authored: null,
       html: f ? f.html : NO_OWN, clean: f ? f.html : NO_OWN, noteHref: f ? editorHref(f.o.x.file, f.o.x.line) : null,
     });
@@ -241,5 +289,5 @@ export async function compositeGalleryComponents({ patterns, atomIds = new Set()
     });
   }
   frameCss(out, inventory, renderer);
-  return { components: out, failed };
+  return { components: out, failed, failedFrames };
 }

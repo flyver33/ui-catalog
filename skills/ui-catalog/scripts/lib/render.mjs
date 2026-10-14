@@ -11,6 +11,7 @@ import { pathToFileURL } from 'node:url';
 import { readText, readJson, relPosix, sha1 } from './fsutil.mjs';
 import { aliasesOf, CSS_MODULE } from '../adapters/react.mjs';
 import { jsxToCalls } from './jsx-transform.mjs';
+import { readTsx } from './jsx.mjs';
 import { rebaseCss } from './public.mjs';
 
 const ASSET = /\.(svg|png|jpe?g|gif|webp|avif|ico|woff2?|ttf|otf|mp4|webm)$/i;
@@ -41,14 +42,54 @@ const MOUNTED = /(\[\s*(?:mounted|isMounted|hasMounted|isClient|isBrowser|hydrat
 // `document` while a frame renders: `createPortal(…, document.body)` needs one.
 const DOCUMENT = { body: {}, head: {}, documentElement: { style: {} }, cookie: '', getElementById: () => null, querySelector: () => null, querySelectorAll: () => [], createElement: () => ({ style: {}, setAttribute() {}, appendChild() {} }), addEventListener() {}, removeEventListener() {} };
 
+// The mark of a translator our next-intl stand-in makes.
+const TRANSLATOR = '__uicTranslator';
+// The name the loader gives a module's top-level declarations under.
+const LOCALS = '__uic_locals';
+// React refuses children on a void element: drawn again without the text.
+const VOID_CHILDREN = /is a self-closing tag and must neither have `children`/;
+
+// The top-level names a compiled module declares: functions, classes, variables, and the
+// bindings its imports became (`const { a, b: c } = __pick(ns)`, `const d = ns.default…`).
+export function topLevelNames(code) {
+  const names = new Set();
+  for (const m of code.matchAll(/^(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*)/gm)) names.add(m[1]);
+  for (const m of code.matchAll(/^(?:export\s+)?(?:const|let|var|class)\s+([A-Za-z_$][\w$]*)/gm)) names.add(m[1]);
+  for (const m of code.matchAll(/^(?:import\s+\*\s+as\s+[\w$]+\s+from\s+"[^"]*";\s*)?const\s*\{([^}]*)\}\s*=\s*__pick\(/gm)) {
+    for (const part of m[1].split(',')) { const n = part.split(':').pop().trim(); if (/^[A-Za-z_$][\w$]*$/.test(n)) names.add(n); }
+  }
+  for (const m of code.matchAll(/;\s*const\s+([A-Za-z_$][\w$]*)\s*=\s*__ns\d+\.default/g)) names.add(m[1]);
+  for (const m of code.matchAll(/^import\s+\*\s+as\s+([A-Za-z_$][\w$]*)\s+from/gm)) if (!/^__ns\d+$/.test(m[1])) names.add(m[1]);
+  // Our own helpers and the compiler's (`__pick`, `_jsx`) are not the module's names.
+  return [...names].filter((n) => !n.startsWith('_'));
+}
+
+// Data a frame may take as a prop: texts, numbers, booleans, lists and plain objects of
+// those — or a translator. Not a function, not a React element.
+export function isData(v, depth = 0) {
+  if (v == null) return false;
+  if (['string', 'number', 'boolean'].includes(typeof v)) return true;
+  if (typeof v === 'function') return depth === 0 && v[TRANSLATOR] === true;
+  if (depth > 6 || typeof v !== 'object') return false;
+  if (Array.isArray(v)) return v.every((x) => x == null || isData(x, depth + 1));
+  const proto = Object.getPrototypeOf(v);
+  if (proto !== Object.prototype && proto !== null) return false;
+  if (Object.getOwnPropertySymbols(v).length) return false;
+  return Object.values(v).every((x) => x == null || isData(x, depth + 1));
+}
+
 // A context the render's error names: the project's `XProvider`, or react-hook-form's form.
 const NAMED_PROVIDER = /\b(?:must|should|can only)\s+be\s+used\s+(?:with)?in(?:side)?\s+(?:an?\s+|the\s+)?<?([A-Z][\w$]*Provider)\b/;
 const EMPTY_FORM = /useFormContext\(\.\.\.\)'? as it is (?:null|undefined)|reading '\w+'\)?[^\n]*useFormContext/;
 
-// next-intl: texts from the project's messages, the way the adapter reads them.
+// next-intl: texts from the project's messages, the way the adapter reads them; a list or a
+// group there is whole for `t.raw`. A translator is marked: a prop may take one.
 const intl = (messages, lang) => `const M = ${JSON.stringify(messages)};
 const fmt = (s, v) => { if (v) for (const [a, b] of Object.entries(v)) if (typeof b !== 'function') s = s.split('{' + a + '}').join(String(b)); return s; };
-const tr = (ns) => { const key = (k) => (ns ? ns + '.' + k : k); const f = (k, v) => fmt(M[key(k)] ?? M[k] ?? k, v); f.rich = f; f.markup = f; f.raw = (k) => M[key(k)] ?? k; f.has = (k) => key(k) in M; return f; };
+const text = (s, k) => (typeof s === 'string' ? s : k);
+const list = (o) => { if (o && typeof o === 'object') { for (const k in o) o[k] = list(o[k]); const ks = Object.keys(o); if (ks.length && ks.every((k, i) => k === String(i))) return ks.map((k) => o[k]); } return o; };
+const group = (p) => { const pre = p + '.'; let o = null; for (const k in M) if (k.startsWith(pre)) { o = o || {}; const rest = k.slice(pre.length).split('.'); let cur = o; for (let i = 0; i < rest.length - 1; i++) cur = cur[rest[i]] = cur[rest[i]] || {}; cur[rest[rest.length - 1]] = M[k]; } return o && list(o); };
+const tr = (ns) => { const key = (k) => (ns ? ns + '.' + k : k); const f = (k, v) => fmt(text(M[key(k)] ?? M[k], k), v); f.rich = f; f.markup = f; f.raw = (k) => M[key(k)] ?? M[k] ?? group(key(k)) ?? group(k) ?? k; f.has = (k) => key(k) in M; f.${TRANSLATOR} = true; return f; };
 export const useTranslations = tr; export const getTranslations = async (o) => tr(typeof o === 'string' ? o : o && o.namespace);
 export const useLocale = () => ${JSON.stringify(lang || 'ru')}; export const getLocale = async () => ${JSON.stringify(lang || 'ru')};
 export const useFormatter = () => ({ number: (n) => String(n), dateTime: (d) => String(d), relativeTime: (d) => String(d), list: (l) => l.join(', ') });
@@ -144,6 +185,11 @@ export async function makeRenderer(root, config) {
       const href = rel ? `/${rel.replace(/^public\//, '')}` : spec;
       return once(`asset:${href}`, () => `const src = ${JSON.stringify(href)}; export default { src, width: 24, height: 24, toString: () => src };\n`);
     }
+    // A JSON file is its data (`import messages from '…/ru/profile.json'`), not TypeScript.
+    if (/\.json$/i.test(spec)) {
+      const rel = resolvePath(from, spec).find(isFile);
+      if (rel) return once(`json:${rel}`, () => `export default ${readText(path.join(root, rel), 'null')};\n`);
+    }
     if (STUBS[spec]) return once(`stub:${spec}`, () => STUBS[spec](reactUrl));
     if (spec === 'react-dom') return once('stub:react-dom', () => portal(pathToFileURL(domPath).href));
     if (spec === 'next-intl' || spec === 'next-intl/server') return once('stub:next-intl', () => intl(messages, config.messages?.lang));
@@ -182,22 +228,135 @@ export async function makeRenderer(root, config) {
     return providerCache.get(key);
   }
 
+  // TSX of the project → an ES module of ours, its imports pointing at our urls.
+  function compile(src, rel) {
+    let code = null;
+    // TypeScript fails on a file now and then («Debug Failure»): then our transform does it.
+    if (ts) {
+      try { code = ts.transpileModule(src, { fileName: rel, compilerOptions: { jsx: ts.JsxEmit.ReactJSX, module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2020, esModuleInterop: true, isolatedModules: true } }).outputText; } catch {}
+    }
+    if (code == null) {
+      if (!strip && !/\.[jt]sx$/.test(rel)) throw new Error(`${rel} не компилируется`);
+      code = /\.[jt]sx$/.test(rel) ? `import { createElement as __h, Fragment as __F } from ${JSON.stringify(reactUrl)};\n${jsxToCalls(src)}` : src;
+      if (/\.tsx?$/.test(rel)) code = quiet(() => strip(code, { mode: 'transform' }));
+    }
+    return rewriteImports(code.replace(MOUNTED, '$1true)'), (spec) => urlOf(rel, spec));
+  }
+
+  const localNames = new Map(); // project file → its top-level names
   function moduleUrl(rel) {
     const key = `file:${rel}`;
     if (urls.has(key)) return urls.get(key);
     // The url is known before the code: modules that import each other find it.
     const file = path.join(tmp, `${sha1(key)}.mjs`);
     urls.set(key, pathToFileURL(file).href);
-    const src = readText(path.join(root, rel), '');
     let code;
-    if (ts) {
-      code = ts.transpileModule(src, { fileName: rel, compilerOptions: { jsx: ts.JsxEmit.ReactJSX, module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2020, esModuleInterop: true, isolatedModules: true } }).outputText;
-    } else {
-      code = /\.[jt]sx$/.test(rel) ? `import { createElement as __h, Fragment as __F } from ${JSON.stringify(reactUrl)};\n${jsxToCalls(src)}` : src;
-      if (/\.tsx?$/.test(rel)) code = quiet(() => strip(code, { mode: 'transform' }));
-    }
-    fs.writeFileSync(file, rewriteImports(code.replace(MOUNTED, '$1true)'), (spec) => urlOf(rel, spec)));
+    try { code = compile(readText(path.join(root, rel), ''), rel); } catch (e) { urls.delete(key); throw e; }
+    // Every top-level declaration, for the render: a component the file does not export
+    // is drawn too, and a prop's expression is computed in the module's scope.
+    const names = topLevelNames(code);
+    localNames.set(rel, names);
+    fs.writeFileSync(file, `${code}\nexport const ${LOCALS} = { ${names.join(', ')} };\n`);
     return urls.get(key);
+  }
+
+  // The translators a file declares (`const t = useTranslations('ns')`, or `getTranslations`):
+  // per name, the one nearest above the line.
+  function translatorsAt(rel, line) {
+    const src = readText(path.join(root, rel), '');
+    const out = new Map();
+    for (const m of src.matchAll(/(?:const|let)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:await\s+)?(?:useTranslations|getTranslations)\(\s*(?:(['"`])([^'"`]*)\2)?\s*\)/g)) {
+      const at = src.slice(0, m.index).split('\n').length;
+      if (at <= line || !out.has(m[1])) out.set(m[1], m[3] || '');
+    }
+    return out;
+  }
+
+  let evals = 0;
+  // A prop's expression from a real call, computed in the module of the call: its top-level
+  // names and imports, and its translators. A name of the calling function's own scope
+  // fails it — then it is not the code's data.
+  // The whole expression of a prop, read again from the source at the call: the inventory
+  // keeps only its start.
+  const parsed = new Map();
+  function exprAt(file, line, name, prop) {
+    if (!parsed.has(file)) { try { parsed.set(file, readTsx(readText(path.join(root, file), ''))); } catch { parsed.set(file, null); } }
+    const el = (parsed.get(file)?.elements || []).find((e) => e.line === line && (e.name === name || e.name.endsWith(`.${name}`)) && e.attrs.some((a) => a.name === prop && a.expr != null));
+    return el ? el.attrs.find((a) => a.name === prop).expr : null;
+  }
+
+  async function evaluate({ file, line, expr, name = null, prop = null }) {
+    const whole = name && prop ? exprAt(file, line, name, prop) : null;
+    const body = (whole ?? String(expr || '').trim().replace(/^\{([\s\S]*)\}$/, '$1')).trim();
+    if (!body || !file) return null;
+    try {
+      const modUrl = moduleUrl(file);
+      const trs = translatorsAt(file, line || 0);
+      const names = (localNames.get(file) || []).filter((n) => !trs.has(n));
+      const src = [
+        `import * as __L from ${JSON.stringify(modUrl)};`,
+        trs.size ? `import { useTranslations as __uT } from 'next-intl';` : '',
+        names.length ? `const { ${names.join(', ')} } = __L.${LOCALS} || {};` : '',
+        ...[...trs].map(([n, ns]) => `const ${n} = __uT(${JSON.stringify(ns || undefined)});`),
+        `export default (${body});`,
+      ].join('\n');
+      const out = path.join(tmp, `eval-${++evals}.mjs`);
+      fs.writeFileSync(out, compile(src, file.replace(/\.[jt]sx?$/, '') + '.__eval.tsx'));
+      const own = 'document' in globalThis;
+      if (!own) globalThis.document = DOCUMENT;
+      try {
+        const m = await quiet(() => import(pathToFileURL(out).href));
+        return isData(m.default) ? { value: m.default } : null;
+      } finally { if (!own) delete globalThis.document; }
+    } catch { return null; }
+  }
+
+  // The project's stories, loaded by our loader: their `meta.component` is the very function
+  // a frame draws. Loaded once, on the first question.
+  let stories = null;
+  async function loadStories() {
+    if (stories) return stories;
+    stories = [];
+    const files = [];
+    const walkDir = (dir) => {
+      let list = [];
+      try { list = fs.readdirSync(path.join(root, dir), { withFileTypes: true }); } catch { return; }
+      for (const d of list) {
+        if (d.name === 'node_modules' || d.name.startsWith('.git')) continue;
+        const rel = path.posix.join(dir, d.name);
+        if (d.isDirectory()) walkDir(rel);
+        else if (/\.stories\.[jt]sx?$/.test(d.name)) files.push(rel);
+      }
+    };
+    for (const dir of config.stories || []) walkDir(dir);
+    for (const rel of files.sort()) {
+      try {
+        const m = await quiet(() => import(moduleUrl(rel)));
+        const meta = m.default;
+        if (!meta || !meta.component) continue;
+        const own = Object.entries(m).filter(([k, v]) => k !== 'default' && v && typeof v === 'object' && v.args && typeof v.args === 'object').map(([, v]) => v.args)[0];
+        const args = { ...(own || {}), ...(meta.args || {}) };
+        stories.push({ component: meta.component, args, file: rel });
+      } catch {}
+    }
+    return stories;
+  }
+  const unwrap = (c) => (c && (c.type || c.render)) || null;
+  // The props a component's story gives: the meta's args over its first story's.
+  async function storyProps({ file, name }) {
+    if (!(config.stories || []).length) return null;
+    try {
+      const list = await loadStories();
+      if (!list.length) return null;
+      const mod = await quiet(() => import(moduleUrl(file)));
+      const comp = mod[name] ?? mod[LOCALS]?.[name] ?? mod.default?.[name];
+      if (!comp) return null;
+      const hit = list.find((s) => s.component === comp || unwrap(s.component) === comp || unwrap(comp) === s.component);
+      if (!hit) return null;
+      const out = {};
+      for (const [k, v] of Object.entries(hit.args)) if (!/^on[A-Z]/.test(k) && typeof v !== 'function' && v != null) out[k] = v;
+      return Object.keys(out).length ? out : null;
+    } catch { return null; }
   }
 
   return {
@@ -205,19 +364,22 @@ export async function makeRenderer(root, config) {
     async render({ file, name, props = {}, text = null }) {
       try {
         const mod = await quiet(() => import(moduleUrl(file)));
-        const comp = mod[name] ?? mod.default?.[name] ?? (mod.default && (mod.default.name === name || mod.default.displayName === name) ? mod.default : null);
-        if (!comp) return { error: `${name} не экспортируется из ${file}` };
+        const comp = mod[name] ?? mod.default?.[name] ?? (mod.default && (mod.default.name === name || mod.default.displayName === name) ? mod.default : null) ?? mod[LOCALS]?.[name];
+        if (!comp) return { error: `${name} нет в ${file}` };
         const own = 'document' in globalThis;
         if (!own) globalThis.document = DOCUMENT;
         try {
           // A context the error names: drawn again inside its provider, the first found innermost.
           const wraps = [];
+          let say = text;
           for (;;) {
-            let el = text == null ? R.createElement(comp, props) : R.createElement(comp, props, text);
+            let el = say == null ? R.createElement(comp, props) : R.createElement(comp, props, say);
             for (const w of wraps) el = R.createElement(w, null, el);
             try {
               return { html: quiet(() => renderToStaticMarkup(el)), providers: wraps.map((w) => w.displayName || w.name) };
             } catch (e) {
+              // An <input> at its root takes no children: drawn again without the text.
+              if (say != null && VOID_CHILDREN.test(String(e?.message || e))) { say = null; continue; }
               const w = wraps.length < 4 ? await providerFor(String(e?.message || e)) : null;
               if (!w || wraps.includes(w)) throw e;
               wraps.push(w);
@@ -228,6 +390,8 @@ export async function makeRenderer(root, config) {
         return { error: String(e?.message || e).split('\n')[0].slice(0, 200) };
       }
     },
+    evaluate,
+    storyProps,
     // The project's exported `*Provider` components: name → file.
     providers(list) { for (const c of list || []) if (c.exported && /Provider$/.test(c.name) && !providerFiles.has(c.name)) providerFiles.set(c.name, c.file); },
     // The CSS modules the rendered components import, their classes renamed as in the HTML.

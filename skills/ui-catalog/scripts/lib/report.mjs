@@ -3,7 +3,7 @@
 import { describeOverride } from './overrides.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
-import { relPosix } from './fsutil.mjs';
+import { relPosix, readJson } from './fsutil.mjs';
 import { blindSpotLines } from './blind-spots.mjs';
 import { RULES } from '../audit.mjs';
 import { unitsOf } from './split.mjs';
@@ -86,8 +86,17 @@ function kitReportMd({ rel, outDir, config, inventory, errors, warnings, finding
   L.push(`- Вопросы по атомам: \`${rel(path.join(outDir, 'questions.md'))}\` — открыто ${open}${open ? ': отвечают люди, в чате или в этом файле' : ''}`);
   L.push(issuesLine(rel(issuesFile), findings));
   const galleryFile = path.join(outDir, 'gallery', 'index.html');
-  if (fs.existsSync(path.join(outDir, 'gallery', 'data.js'))) L.push(`- Галерея: \`${rel(galleryFile)}\` (через статический сервер; все реализации атома — рядом)`, '');
-  else L.push('- Галерея не собрана: в node_modules проекта нет react (npm ci) — спеки читаются в `atoms/`, составные — в `composites/`.', '');
+  if (fs.existsSync(path.join(outDir, 'gallery', 'data.js'))) {
+    L.push(`- Галерея: \`${rel(galleryFile)}\` (через статический сервер; все реализации атома — рядом)`);
+    // Frames that did not render, by reason: what the project's data or a browser lacks (gal.frames-failed).
+    const failed = readJson(path.join(outDir, 'components.json'))?.failedFrames || [];
+    if (failed.length) {
+      const by = new Map();
+      for (const f of failed) { const k = f.why.replace(/«[^»]*»(,\s*«[^»]*»)*/g, '«…»').split(' — ')[0]; by.set(k, (by.get(k) || 0) + 1); }
+      L.push(`- Не отрисовались ${plural(failed.length, 'кадр', 'кадра', 'кадров')} галереи — ${[...by].sort((a, b) => b[1] - a[1]).map(([k, n]) => `${k}: ${n}`).join('; ')}. Кадр так и пишет «не отрисовался»; данных ему не хватает в проекте, а не в каталоге.`);
+    }
+    L.push('');
+  } else L.push('- Галерея не собрана: в node_modules проекта нет react (npm ci) — спеки читаются в `atoms/`, составные — в `composites/`.', '');
   L.push(`Атомы: ${atoms.map((a) => a.name).join(', ')}; запечатано ${sealed} из ${kit.specs.length}.`);
   const p = kit.patterns;
   if (p) {

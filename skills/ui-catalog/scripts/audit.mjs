@@ -84,8 +84,8 @@ function specificity(sel) {
 const cmpSpec = (a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
 const cmpOrder = (a, b) => a[0] - b[0] || a[1] - b[1];
 
-export async function runAudit(root, outDir, { quiet = false, scan = null } = {}) {
-  const { inventory, config } = scan || await runScan(root, outDir, { quiet: true });
+export async function runAudit(root, outDir, { quiet = false, scan = null, write = true } = {}) {
+  const { inventory, config } = scan || await runScan(root, outDir, { quiet: true, write });
   const lib = loadLibrary(outDir);
   const unitsById = new Map(inventory.units.map((u) => [u.id, u]));
   const scaffold = new Set(Object.keys(config.scaffold || {}));
@@ -329,8 +329,10 @@ export async function runAudit(root, outDir, { quiet = false, scan = null } = {}
 
   const result = { backgrounds: backgrounds.map((b) => ({ label: b.label, color: hex(b.c) })), findings };
   const reportFile = issuesFile(root, outDir, config);
-  writeReport(root, reportFile, config, findings, lib, unitsById);
-  for (const old of ['audit.json', 'issues']) fs.rmSync(path.join(outDir, old), { recursive: true, force: true }); // replaced by the report
+  if (write) {
+    writeReport(root, reportFile, config, findings, lib, unitsById);
+    for (const old of ['audit.json', 'issues']) fs.rmSync(path.join(outDir, old), { recursive: true, force: true }); // replaced by the report
+  }
   if (!quiet) {
     console.log(`ui-catalog audit: несостыковок ${findings.length}`);
     console.log(`  ${path.relative(process.cwd(), reportFile)}`);

@@ -95,6 +95,23 @@ function detectFramework(root) {
   return null;
 }
 
+// The project's stories: the project root, or a folder next to it, with a
+// `.storybook/` — as paths from the root (`../ui-kit` next to `apps/web`).
+export function detectStories(root) {
+  const isDir = (p) => { try { return fs.statSync(p).isDirectory(); } catch { return false; } };
+  const out = [];
+  if (isDir(path.join(root, '.storybook'))) out.push('.');
+  const parent = path.dirname(path.resolve(root));
+  let siblings = [];
+  try { siblings = fs.readdirSync(parent, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name).sort(); } catch {}
+  for (const name of siblings) {
+    const dir = path.join(parent, name);
+    if (path.resolve(dir) === path.resolve(root)) continue;
+    if (isDir(path.join(dir, '.storybook'))) out.push(`../${name}`);
+  }
+  return out;
+}
+
 const SHOWCASE_DIRS = /(^|\/)(catalog|styleguide|style-guide|kitchen-?sink|showcase|storybook|design-system-demo)(\/|$)/i;
 
 // React (and Preact) projects: styles from what the app's root imports, scopes by folder
@@ -149,6 +166,7 @@ function detectReactConfig(root, outDir) {
     styles, tokens, icons: null, scopes,
     showcase: ['**/*.stories.*', '**/stories/**'],
     messages,
+    ...(detectStories(root).length ? { stories: detectStories(root) } : {}),
     brand: { logo, title: 'Style Guide' },
     reference: detectReference(root, { readJson, exists, path }),
     exclude: ['**/*.test.*', '**/*.spec.*', '**/__tests__/**', '**/__mocks__/**', '**/testing/**', 'public/**'],

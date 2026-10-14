@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs, writeText, writeJson, readText, readJson, relPosix, fromHref, toPosix, isMain, sha1 } from './lib/fsutil.mjs';
-import { resolveOut, ignoreIds, iconBaseOf } from './lib/config.mjs';
+import { resolveOut, ignoreIds, iconBaseOf, detectStories } from './lib/config.mjs';
 import { runScan } from './scan.mjs';
 import { loadLibrary, componentHash, compDir, FOUNDATIONS_DIR } from './lib/library.mjs';
 import { foundationFiles, tokenRoles } from './lib/foundations.mjs';
@@ -247,7 +247,8 @@ export async function runBuild(root, outDir, { gallery = true, quiet = false } =
   // React: the implementations are rendered in Node into static frames (lib/render.mjs).
   let kitGallery = null;
   if (gallery && kitMode) {
-    const renderer = await makeRenderer(root, config);
+    // Stories are a source of props: the config's, else found now.
+    const renderer = await makeRenderer(root, { ...config, stories: config.stories ?? detectStories(root) });
     if (renderer.error) {
       fs.rmSync(path.join(galleryDir, 'data.js'), { force: true });
       if (!quiet) console.log(`  галерея не собрана: ${renderer.error}`);
@@ -259,8 +260,12 @@ export async function runBuild(root, outDir, { gallery = true, quiet = false } =
         const comps = await compositeGalleryComponents({ patterns: patterns.all, atomIds: new Set(kit.atoms.map((a) => a.id)), inventory, renderer, editorHref, mdHref, rebase });
         kitGallery.composites = comps.components;
         kitGallery.failed += comps.failed;
+        kitGallery.failedFrames = [...kitGallery.failedFrames, ...comps.failedFrames];
         writeText(path.join(galleryDir, 'modules.css'), renderer.modulesCss(galleryDir, pub));
       } finally { renderer.close(); }
+      // The frames that did not render, for check.
+      const cj = path.join(outDir, 'components.json');
+      writeJson(cj, { ...readJson(cj), failedFrames: kitGallery.failedFrames });
       if (!quiet && kitGallery.failed) console.log(`  не отрисовались: ${kitGallery.failed} — в галерее это кадры «не отрисовался: …»`);
     }
   }

@@ -46,7 +46,9 @@ const LAYOUT_PROPS = /^(display|gap|row-gap|column-gap|flex(-[a-z]+)?|grid(-[a-z
 const CSS_WORDS = /^(тень|фон|обёртка|обертка|контейнер|враппер|wrapper|container|блок|элемент|div|span)$/i;
 
 export async function runCheck(root, outDir, { seal = null, strict = false, json = false, only = null, report = false, silent = false } = {}) {
-  const { inventory, config } = await runScan(root, outDir, { quiet: true });
+  // --only is a sub-agent's share: it writes nothing, so several run at once.
+  const write = !only;
+  const { inventory, config } = await runScan(root, outDir, { quiet: true, write });
   const lib = loadLibrary(outDir);
   const unitsById = new Map(inventory.units.map((u) => [u.id, u]));
   const libraryClasses = new Set();
@@ -65,7 +67,7 @@ export async function runCheck(root, outDir, { seal = null, strict = false, json
   const I = (rule, id, msg, fix) => info.push({ id, msg, fix, rule });
 
   // Audit first: a focus the product does not show must not be pinned in the gallery.
-  const audit = await runAudit(root, outDir, { quiet: true, scan: { inventory, config } });
+  const audit = await runAudit(root, outDir, { quiet: true, scan: { inventory, config }, write });
   const focusLost = new Set(audit.findings.filter((f) => f.rule === 'focus-lost').map((f) => f.unit));
   const ignored = new Set([...ignoreIds(config), ...Object.keys(config.scaffold || {})]);
 
@@ -368,7 +370,7 @@ export async function runCheck(root, outDir, { seal = null, strict = false, json
   }
 
   // Config: only keys of the format (cfg.keys).
-  const CONFIG_KEYS = ['$comment', 'adapter', 'project', 'styles', 'tokens', 'icons', 'scopes', 'showcase', 'exclude', 'ignoreUnits', 'scaffold', 'labels', 'reference', 'issuesFile', 'brand', 'classPrefix', 'editor', 'frame', 'lang', 'typography', 'messages', 'rejectPatterns'];
+  const CONFIG_KEYS = ['$comment', 'adapter', 'project', 'styles', 'tokens', 'icons', 'scopes', 'showcase', 'exclude', 'ignoreUnits', 'scaffold', 'labels', 'reference', 'issuesFile', 'brand', 'classPrefix', 'editor', 'frame', 'lang', 'typography', 'messages', 'stories', 'rejectPatterns'];
   for (const k of Object.keys(config).filter((x) => !x.startsWith('__'))) if (!CONFIG_KEYS.includes(k)) E('cfg.keys', 'config', `в catalog.config.json поле «${k}», которого нет в формате`, 'убери его');
   for (const k of Object.keys(config.reference || {})) if (!['kind', 'name', 'source', 'lang'].includes(k)) E('cfg.reference', 'config', `reference.${k} — такого поля нет`, 'reference: kind, name, source, lang');
   for (const f of ['decisions.json', 'audit.json', 'issues']) if (fs.existsSync(path.join(outDir, f))) W('cfg.keys', 'library', `в каталоге лежит ${f} — его больше нет в формате`, 'несостыковки теперь в ../ui-issues.md; файл можно удалить');
@@ -437,6 +439,17 @@ export async function runCheck(root, outDir, { seal = null, strict = false, json
       const run = readJson(path.join(outDir, 'gallery', SELFTEST_FILE));
       if (!run || run.data !== sha1(dataJs)) W('gal.selftest-seen', 'gallery', run ? 'галерею не проверяли после последней сборки' : 'галерею не проверяли', 'node scripts/gallery-test.mjs (без браузера на машине — gallery/index.html?selftest в своём)');
       else for (const f of run.failed || []) E('gal.selftest-seen', 'gallery', `${f.id} ${f.where} — ${f.msg}`, 'пример — исправь его; сама галерея — в отчёт пользователю');
+    }
+  }
+
+  // ── frames the build could not draw (React): a warning per component ──
+  {
+    const by = new Map();
+    for (const f of readJson(path.join(outDir, 'components.json'))?.failedFrames || []) (by.get(f.id) || by.set(f.id, []).get(f.id)).push(f);
+    const frames = (n) => `${n} ${n % 10 === 1 && n % 100 !== 11 ? 'кадр' : n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 10 || n % 100 >= 20) ? 'кадра' : 'кадров'}`;
+    for (const [id, list] of by) {
+      const reasons = [...new Set(list.map((f) => `${f.frame}: ${f.why}`))];
+      W('gal.frames-failed', id, `не отрисовал${list.length === 1 ? 'ся' : 'ись'} ${frames(list.length)} — ${reasons.slice(0, 3).join('; ')}${reasons.length > 3 ? ` и ещё ${reasons.length - 3}` : ''}`, 'кадру не хватает данных проекта или браузера — назови это пользователю, в проект не пиши');
     }
   }
 

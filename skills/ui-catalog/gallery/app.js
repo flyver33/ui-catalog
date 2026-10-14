@@ -197,8 +197,9 @@
     // stays readable; what does not fit is cropped (a menu shows its first items).
     const thumbWide = f.thumb && W > cw && drawnW > 0;
     let s = crop ? 1 : thumbWide ? Math.min(1, Math.max(cw / drawnW, 0.6)) : Math.min(1, cw / W);
-    // A card preview of a tall composite (a window): scaled to fit its height too, not below 60%.
-    const tall = f.thumb && f.comp.composite && f.rawH * s > f.wrap.clientHeight + 1;
+    // A card preview taller than its card (a window, a textarea of six rows): scaled to fit its
+    // height too, not below 60%.
+    const tall = f.thumb && f.rawH * s > f.wrap.clientHeight + 1;
     if (tall) s = Math.min(s, Math.max(f.wrap.clientHeight / f.rawH, 0.6));
     // Taller still: the card shows its top, cut below (G22 knows it by data-crop).
     if (tall && f.rawH * s > f.wrap.clientHeight + 1) f.iframe.dataset.crop = 'bottom'; else delete f.iframe.dataset.crop;
@@ -252,7 +253,8 @@
     f.x = d.x || null;
     f.rawH = d.h;
     f.drawn = f.w > 0;
-    if (!f.drawn && f.comp.composite && !f.narrow && f.st.width == null) { f.narrow = 375; f.iframe.dataset.width = '375'; }
+    // Empty at the desktop width (drawn for phones): at 375, an atom's frame as a composite's.
+    if (!f.drawn && !f.narrow && f.st.width == null) { f.narrow = 375; f.iframe.dataset.width = '375'; }
     layout(f);
   });
   // live: real interaction (no pinned pseudo-states). Everything else — card

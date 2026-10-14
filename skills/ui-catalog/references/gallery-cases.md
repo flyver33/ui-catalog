@@ -35,7 +35,7 @@
 |---|---|---|
 | G20 A | что нарисовано внутри кадра | кадр не пустой: в видимой части что-то нарисовано (текст, фон, рамка, тень, картинка) |
 | G21 A | размер нарисованного на экране с учётом масштаба | уменьшенный кадр — не меньше 8×8 px (миниатюра читается); в 100% — не меньше 3 px: компонент как в продукте |
-| G22 A | границы нарисованного | целиком внутри видимой части кадра — ничего не обрезано (по высоте — кроме карточки очень высокого составного, `data-crop="bottom"`: видна его верхняя часть; по ширине — кроме намеренно обрезанного широкого кадра) |
+| G22 A | границы нарисованного | целиком внутри видимой части кадра — ничего не обрезано (по высоте — кроме карточки очень высокого кадра — составного или атома, — `data-crop="bottom"`: видна его верхняя часть; по ширине — кроме намеренно обрезанного широкого кадра) |
 | G24 A | текст внутри кадра с учётом масштаба | не мельче 7 px на экране — превью широкого блока не сжимается в нечитаемую строку |
 | G26 A | кадр без `data-width` у компонента с брейкпоинтами | окно кадра шире самого широкого брейкпоинта компонента: показана десктопная раскладка, как в живом примере, а не телефонная из-за узкой ячейки |
 | G27 A | кадр, сдвинутый или уменьшенный в ячейке | вокруг него фон кадра, не шахматка (шахматка допустима только по бокам окна с числовой шириной — она показывает его границы) |
@@ -115,3 +115,9 @@
   gallery: each failure of a run on the current `data.js` is an error, its case id and
   page in the message; no run, or a run on another `data.js` (a later `build`), is a
   warning «галерею не проверяли» naming the command.
+- **gal.frames-failed** (check) — `check` reads the frames `build` could not draw
+  (`components.json` → `failedFrames`, a React gallery) and warns once per atom or
+  composite: how many of its frames say «не отрисовался» and why, the reasons as the
+  frames say them; `--report` gives the user the count by reason. A warning, not an
+  error: what such a frame lacks is the project's data or a browser, not something the
+  agent may write into the project (decision of the author, 2026-10-13).

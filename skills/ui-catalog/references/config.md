@@ -51,7 +51,8 @@ is wrong for this project; what scripts write there, you do not edit.
 - **cfg.keys** (check) — Only these keys: `$comment`, `adapter`, `project`, `styles`,
   `tokens`, `icons`, `scopes`, `showcase`, `exclude`, `ignoreUnits`, `scaffold`,
   `labels`, `reference`, `issuesFile`, `brand`, `classPrefix`, `editor`, `frame`,
-  `lang`, `typography`, `messages` (react: where the message files are), `rejectPatterns`
+  `lang`, `typography`, `messages` (react: where the message files are), `stories`
+  (react: folders of the project's stories), `rejectPatterns`
   (react: candidates you rejected, `{ id, why }` — [[pat.review]]). Anything else (`accepted`, `decisions`, `hideTokenGroups`…) is an
   error, and so are leftovers of older formats in the library dir: `decisions.json`,
   `audit.json`, `issues/`.
@@ -72,7 +73,8 @@ is wrong for this project; what scripts write there, you do not edit.
 Detected by `scan`, kept unless wrong: `project` (`package.json` name, else the first
 heading of README.md / CLAUDE.md / AGENTS.md up to « — », else the folder name),
 `icons` (`dir`; `base` — the icon class family when every icon class shares one root),
-`brand.logo` (the `*logo*` image the code refers to from the most files), `tokens`. Optional:
+`brand.logo` (the `*logo*` image the code refers to from the most files), `tokens`,
+`stories` (react: the project root or a folder next to it with a `.storybook/`). Optional:
 `issuesFile` (where `audit` writes the report, default `ui-issues.md` next to the
 library dir), `editor` (`vscode`, `cursor`, `none`), `frame`, `typography.families`
 (the order of type families in the gallery when the guess is wrong).

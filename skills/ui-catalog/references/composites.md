@@ -54,6 +54,16 @@ why:
   «совпал текст, смысл другой», «признак во вложенном компоненте»). Merging
   several candidates (`merged:`): «обязательные слоты совпадают». A composite made of
   part of a candidate (split): «различается обязательный слот» or «различается вид».
+- **pat.split** (agent) — With more than 100 candidates and sub-agents at hand, split the
+  review: groups of composites about even by candidates, one sub-agent each, the brief
+  from `node scripts/task.mjs --composites <id>[,<id>...]` handed over as it is. A
+  sub-agent edits only its composites and answers with JSON — the candidates it rejects
+  and those it moves to a composite outside its group; you write `rejectPatterns`, move
+  those candidates, settle a place two groups both kept (one stays, the other is «тот
+  же экземпляр, что …»), delete the composites left under [[pat.threshold]], then
+  `generate`, `build`, `check`. Fewer candidates — review them yourself: a sub-agent
+  re-reads the rules and costs more than it saves. *Only the agent:* whether sub-agents
+  exist is the environment's, and where groups overlap shows only in their answers.
 - **pat.added** (check) — A place the scripts missed goes into `added:` as
   `file:line — признак`; the place must exist and show a signal of the type, and must not
   be a candidate already (then it goes into `candidates:`).

@@ -187,9 +187,14 @@ Usually after a designer made what a `requests/*.md` asked for.
   components (`inventory.json` → `usageCount`); every component is still finished in
   the same run.
 - Independent components can be written in parallel by sub-agents, one group each.
-  The brief is `node scripts/task.mjs <id>[,<id>...]` — hand it over as it is; the
-  sub-agent checks itself with `check.mjs --only <ids>` and does not seal. Afterwards
-  you review grouping, intents and cross-links, run `generate --facts all`, then seal.
+  The brief is `node scripts/task.mjs <id>[,<id>...]` (guidelines; atom specs in kit
+  mode) — hand it over as it is; the sub-agent checks itself with
+  `check.mjs --only <ids>`, which writes nothing, so several can run it at once; it
+  does not seal. Afterwards you review grouping, intents and cross-links, run
+  `generate --facts all`, then seal.
+- Kit mode with more than 100 candidates: split the review of composites
+  [[pat.split]] — the brief is `node scripts/task.mjs --composites <id>[,<id>...]`,
+  the config and the moves between groups are yours.
 
 ## Done means
 
