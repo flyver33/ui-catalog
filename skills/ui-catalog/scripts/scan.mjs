@@ -28,6 +28,14 @@ export async function runScan(root, outDir, { quiet = false, write = true } = {}
   };
   const classes = new Set((result.units || []).flatMap((u) => [u.id, ...Object.keys(u.modifiers || {}), ...Object.keys(u.elements || {})]));
   inventory.blindSpots = blindSpots(root, config, classes);
+  // Next to nothing where the last scan found much: a wrong --root, not a project that lost
+  // its UI. Stop before anything is written; --force writes anyway.
+  const size = (inv) => (inv?.units || []).length + (inv?.react?.components || []).length;
+  const prev = readJson(path.join(outDir, 'inventory.json'), null);
+  if (prev && size(prev) >= 20 && size(inventory) < size(prev) * 0.1 && !process.argv.includes('--force')) {
+    fail(`В ${root} найдено компонентов и классов ${size(inventory)}, а в прошлый раз — ${size(prev)}. Похоже, --root не тот: ничего не записано.\n` +
+      `Корень — папка проекта, от которой идут пути в inventory.json (например, ${(prev.react?.components || prev.units || [])[0]?.file || (prev.units || [])[0]?.defined?.[0]?.file || 'features/…'}). Если код и правда так изменился — запусти с --force.`, 2);
+  }
   if (write) writeJson(path.join(outDir, 'inventory.json'), inventory);
   // A new config gets the icon class family the icon set shares (one setting fewer to guess).
   if (config.__created && config.icons && !config.icons.base && iconBaseOf(config, inventory)) {

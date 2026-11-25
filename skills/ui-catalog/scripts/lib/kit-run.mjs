@@ -9,12 +9,13 @@ import { readAnswers, writeQuestions, QUESTIONS_FILE } from './questions.mjs';
 import { atomSections, newAtomFile, rewriteAtomFile } from './atom-spec.mjs';
 import { parseFrontmatter } from './frontmatter.mjs';
 import { runPatternGenerate } from './pattern-run.mjs';
+import { spaceQuestions } from './spacing.mjs';
 
 export const isKitMode = (config) => config?.adapter === 'react';
 
-export function kitOf(inventory, outDir) {
+export function kitOf(inventory, outDir, config = {}) {
   const answers = readAnswers(path.join(outDir, QUESTIONS_FILE));
-  return { kit: kitModel(inventory, { answers, kits: kitRefs(outDir) }), answers };
+  return { kit: kitModel(inventory, { answers, kits: kitRefs(outDir), families: config.families || [] }), answers };
 }
 
 // `kit:` of every spec: the kit components the developers built.
@@ -34,27 +35,49 @@ export function kitRefs(outDir) {
 // `sourceHash:` line, so the first seal holds.
 export const atomHash = (text, atom) => sha1(String(text).replace(/^sourceHash:.*(?:\r?\n|$)/m, '') + '\n§\n' + (atom?.factsHash || 'missing'));
 
+// What the agent assumed where the person running the skill did not know (context.assumed):
+// questions to the team, first in the product part of questions.md.
+export const introId = (question) => `intro.${sha1(String(question)).slice(0, 8)}`;
+export function introQuestions(config, answers) {
+  const list = [].concat(config.context?.assumed || []).filter((x) => x && x.question);
+  if (!list.length) return null;
+  const questions = list.map((x) => {
+    const id = introId(x.question);
+    const ans = answers.get(id);
+    const answered = !!ans?.answer;
+    return {
+      id, kind: 'intro', audience: 'product', title: x.question, human: x.question, wordsGiven: true,
+      recommend: 'верно', why: `агент взял: ${x.assumed}`, options: ['верно', 'неверно — напишите, как правильно'],
+      facts: [`взято: ${x.assumed}`], factsHash: sha1(String(x.assumed)).slice(0, 10), flags: [],
+      status: answered ? 'answered' : 'open', answer: ans?.answer || '', who: ans?.who || '', date: ans?.date || '', previous: '',
+    };
+  });
+  return { id: 'intro', name: 'Знакомство с проектом', uses: Number.MAX_SAFE_INTEGER, questions };
+}
+
 export function runKitGenerate(root, outDir, inventory, config, { quiet = false } = {}) {
-  const { kit } = kitOf(inventory, outDir);
+  const { kit, answers } = kitOf(inventory, outDir, config);
   const atomsDir = compDir(outDir);
   const written = [], updated = [];
   for (const a of kit.atoms) {
     const file = path.join(atomsDir, `${a.id}.md`);
-    const sections = atomSections(a, { root, atomsDir, tokens: inventory.tokens || [] });
+    const sections = atomSections(a, { root, atomsDir, tokens: inventory.tokens || [], families: config.families || [], inventory, context: config.context || null });
     const old = readText(file);
     if (old == null) { writeText(file, newAtomFile(a, sections)); written.push(a.id); continue; }
     const next = rewriteAtomFile(old, sections);
     if (next !== old) { writeText(file, next); updated.push(a.id); }
   }
-  const q = writeQuestions(path.join(outDir, QUESTIONS_FILE), config.project, kit.atoms);
+  // Composites first: the spacing by role is measured on them and asked with the atoms.
+  const patterns = runPatternGenerate(root, outDir, inventory, config, { quiet, atoms: kit.atoms, answers });
+  const intro = introQuestions(config, answers);
+  const basics = spaceQuestions(patterns.space);
+  const q = writeQuestions(path.join(outDir, QUESTIONS_FILE), config.project, [...(intro ? [intro] : []), ...(basics ? [basics] : []), ...kit.atoms], { families: config.families || [], code: answers.code || [] });
   if (!quiet) {
     console.log(`ui-catalog generate (кит): атомов ${kit.atoms.length}; новых спек ${written.length}, переписано из кода ${updated.length}`);
     for (const a of kit.atoms) console.log(`  ${a.id.padEnd(12)} ${a.name.padEnd(14)} реализаций ${a.impls.length}, мест ${a.uses}, вопросов ${a.questions.filter((x) => x.status !== 'answered').length}`);
     console.log(`  вопросы: ${q.total}, открыто ${q.open} — ${path.join(outDir, QUESTIONS_FILE)}`);
     console.log(`  служебных классов (не атомы): ${kit.utilities.length}`);
   }
-  // Composites: found in the code, described as it has them.
-  const patterns = runPatternGenerate(root, outDir, inventory, config, { quiet });
   return { kit, written, updated, questions: q, patterns };
 }
 

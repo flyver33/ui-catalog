@@ -5,6 +5,7 @@ import crypto from 'node:crypto';
 import { TYPES, STATE_VOCAB } from './types.mjs';
 import { AXES } from './variants.mjs';
 import { parseColor, deltaE, over } from './color.mjs';
+import { reviewOf, reviewQuestion, answerEffect, audienceOf } from './review.mjs';
 
 const sha = (s) => crypto.createHash('sha1').update(s).digest('hex').slice(0, 10);
 
@@ -144,7 +145,7 @@ export function familiesOf(units, classSets, utilities) {
 
 // ── the model ────────────────────────────────────────────────────────
 
-export function kitModel(inventory, { answers = new Map(), tokens = null, kits = new Map() } = {}) {
+export function kitModel(inventory, { answers = new Map(), tokens = null, kits = new Map(), families = [] } = {}) {
   const r = inventory.react || { components: [], calls: [], raw: [], modules: [], classSets: [] };
   const units = inventory.units || [];
   const unitsById = new Map(units.map((u) => [u.id, u]));
@@ -171,7 +172,7 @@ export function kitModel(inventory, { answers = new Map(), tokens = null, kits =
     const sign = KIT.get(type);
     // Built on a kit atom of the same type: a wrapper, not an implementation.
     const wrapsAtom = c.renders.some((n) => typeOfName(n) === type && libraryComps.some((k) => k.name === n && compKey(k) !== compKey(c)));
-    if (wrapsAtom) { atomOf(type).wrappers.push({ name: c.name, file: c.file, line: c.line, uses: c.uses }); continue; }
+    if (wrapsAtom) { atomOf(type).wrappers.push({ name: c.name, file: c.file, line: c.line, uses: c.uses, key: compKey(c), renders: c.renders }); continue; }
     if (!c.library && !sign.els.includes(c.root)) continue;
     atomOf(type).impls.push({ kind: 'component', key: compKey(c), name: c.name, file: c.file, line: c.line, library: c.library, uses: c.uses, comp: c });
   }
@@ -280,7 +281,8 @@ export function kitModel(inventory, { answers = new Map(), tokens = null, kits =
           }
           for (const val of p.values || []) {
             const cv = classifyValue(val, hint || undefined);
-            const uses = calls.filter((x) => x.props[p.name] === val).length + (p.default === val ? calls.filter((x) => x.props[p.name] === undefined).length : 0);
+            // `size={16}` and `size="16"` are one value.
+            const uses = calls.filter((x) => lit(x.props[p.name]) === String(val)).length + (p.default === val ? calls.filter((x) => x.props[p.name] === undefined).length : 0);
             add(hint || cv.axis, cv.name, i, val, uses, { prop: p.name, isDefault: p.default === val });
           }
         }
@@ -312,6 +314,11 @@ export function kitModel(inventory, { answers = new Map(), tokens = null, kits =
       return settle(q, answers);
     };
     const valueImpls = (v) => [...v.impls.values()].filter((x) => x.impl.kind !== 'raw');
+    // The files a value is used in: calls that pass it, markup that has its class.
+    const valueFiles = (v) => [...new Set(valueImpls(v).flatMap((x) => (x.impl.kind === 'component'
+      ? r.calls.filter((c) => c.component === x.impl.key && x.prop && (x.bool ? c.props[x.prop] !== undefined && lit(c.props[x.prop]) !== 'false' : lit(c.props[x.prop]) === String(x.token) || (x.isDefault && c.props[x.prop] === undefined))).map((c) => c.file)
+      // A one-dash member is a unit with its own uses; a BEM modifier is among its base's.
+      : (x.unit?.usages || (x.impl.unit?.usages || []).filter((u) => u.classes?.includes(x.cls))).map((u) => u.file))))];
     const where = (x) => (x.impl.kind === 'component' ? `\`${x.impl.name}\` ${x.prop}="${x.token}"` : `\`.${x.cls}\``) + ` — ${places(x.uses)}`;
     for (const [axis, values] of Object.entries(a.axes)) {
       const all = [...values.values()];
@@ -340,7 +347,7 @@ export function kitModel(inventory, { answers = new Map(), tokens = null, kits =
         if (dBg >= 3 || dFg >= 3) continue;
         const [big, small] = A.uses >= B.uses ? [A, B] : [B, A];
         const answer = ask({
-          id: `${a.id}.same-look.${slug(A.name)}.${slug(B.name)}`, kind: 'same-look',
+          id: `${a.id}.same-look.${slug(A.name)}.${slug(B.name)}`, kind: 'same-look', human: `«${A.name}» и «${B.name}» выглядят одинаково`, places: small.uses, files: [...valueFiles(A), ...valueFiles(B)],
           title: `${a.name}: «${A.name}» и «${B.name}» выглядят одинаково`,
           facts: [`\`.${ca.cls}\` и \`.${cb.cls}\`: фон ΔE ${dBg.toFixed(1)}, текст ΔE ${dFg.toFixed(1)} (меньше 3 — глаз не отличит)`],
           options: [`слить в «${A.name}»`, `слить в «${B.name}»`, 'оставить оба'],
@@ -358,11 +365,17 @@ export function kitModel(inventory, { answers = new Map(), tokens = null, kits =
         if (kitHas(v) && !decided(qid)) { kept.push(v); continue; }
         // Two implementations, or a quarter of the axis's uses: not a question.
         if (!kitHas(v) && (valueImpls(v).length >= 2 || v.uses >= total * 0.25)) { kept.push(v); continue; }
+        // No place uses it: nothing to lose, no question — it goes at the move.
+        if (!kitHas(v) && !v.uses && !decided(qid)) { (a.zeroValues ||= []).push({ axis, name: v.name }); continue; }
         // A value only one implementation has: keep, drop or merge — a question.
-        const others = all.filter((o) => o !== v).map((o) => o.name);
+        // Merge only into a value something uses.
+        const others = all.filter((o) => o !== v && (o.uses > 0 || kitHas(o))).map((o) => o.name);
         const keep = v.uses >= Math.max(5, total * 0.1);
         const answer = ask({
-          id: qid, kind: 'only-one',
+          id: qid, kind: 'only-one', human: `${cap(axisRu(axis))} «${v.name}»`, places: v.uses, files: valueFiles(v),
+          // How the code spells the value: a verdict finds it by them; rare is a mark.
+          axis, value: v.name, spellings: valueImpls(v).map((x) => ({ impl: x.impl.name, prop: x.prop || null, token: x.token, cls: x.cls || null })),
+          flags: keep ? [] : [{ mark: 'редкое', why: `${places(v.uses)} — меньше 10% использований (${total})` }],
           title: `${a.name}: ${axisRu(axis)} «${v.name}» есть только у ${(valueImpls(v).find((x) => !x.impl.kit) || valueImpls(v)[0])?.impl.name || 'одной реализации'}`,
           facts: valueImpls(v).map(where),
           options: ['оставить в ките', 'убрать', ...others.map((o) => `слить с «${o}»`)],
@@ -409,7 +422,7 @@ export function kitModel(inventory, { answers = new Map(), tokens = null, kits =
         if (kitDef && !decided(`${a.id}.default.${axis}`)) def = kitDef;
         else if (ranked.length > 1 && usesOf(ranked[0]) < sum * 0.5) {
           const answer = ask({
-            id: `${a.id}.default.${axis}`, kind: 'default',
+            id: `${a.id}.default.${axis}`, kind: 'default', human: `${cap(axisRu(axis))} по умолчанию`, places: sum, files: ranked.flatMap(valueFiles),
             title: `${a.name}: у ${axisRu(axis)} нет значения, которое стоит в большинстве мест`,
             facts: ranked.map((v) => `«${v.name}» — ${places(usesOf(v))}`),
             options: ranked.map((v) => `по умолчанию «${v.name}»`), recommend: `по умолчанию «${ranked[0].name}»`, why: 'самое частое',
@@ -426,13 +439,10 @@ export function kitModel(inventory, { answers = new Map(), tokens = null, kits =
         merged: [...merged],
       });
     }
-    // Required props of the type, then props two or more components have.
+    // Required props of the type. Other props of the code are on review.
     const comps = a.impls.filter((i) => i.kind === 'component');
     const have = new Set(a.api.map((p) => p.prop));
     for (const p of TYPE_PROPS[a.type] || []) if (!have.has(p)) { a.api.push({ prop: p, required: true, from: comps.filter((c) => c.comp.props.some((x) => x.name === p)).map((c) => c.name) }); have.add(p); }
-    const count = new Map();
-    for (const c of comps) for (const p of c.comp.props) if (!(p.name in PROP_AXIS) && p.name !== 'className' && p.name !== 'children') count.set(p.name, (count.get(p.name) || 0) + 1);
-    for (const [p, n] of count) if (n >= 2 && !have.has(p)) { a.api.push({ prop: p, common: true, from: comps.filter((c) => c.comp.props.some((x) => x.name === p)).map((c) => c.name) }); have.add(p); }
     // The kit's own props: the developers built them.
     const renamed = new Set(a.kitRemoved.filter((x) => x.prop).map((x) => x.prop));
     if (a.kit?.comp) for (const p of a.kit.comp.props) {
@@ -440,6 +450,25 @@ export function kitModel(inventory, { answers = new Map(), tokens = null, kits =
       const isBool = /^boolean\b/.test(p.type || '');
       a.api.push({ prop: p.name, kit: true, bool: isBool, from: [a.kit.impl.name], values: !isBool && p.values ? p.values.map((v) => ({ name: v, token: v, uses: 0, from: [a.kit.impl.name] })) : null, default: p.default ?? null });
       have.add(p.name);
+    }
+    // What the code has beyond that: on review, people answer.
+    const axisProps = new Set([...Object.keys(PROP_AXIS), ...Object.values(a.axes).flatMap((m) => [...m.values()].flatMap((v) => [...v.impls.values()].map((x) => x.prop).filter(Boolean)))]);
+    const { items, unused } = reviewOf(a, {
+      calls: r.calls, families, classUses: (i) => (i.unit.usages || []).map((u) => u.file), settled: have, axisProps, ownProps: OWN_PROPS,
+      isNative: (i, n) => { const nat = nativeProps(i.comp); return nat.has(n) || (n.startsWith('aria-') && nat.has('aria-*')); },
+    });
+    a.unused = unused;
+    a.review = [];
+    a.dropped = [];
+    for (const it of items) {
+      const q = reviewQuestion(a, it);
+      const eff = answerEffect(ask(q));
+      a.review.push(q);
+      if (eff?.keep && it.kind === 'prop' && !have.has(it.prop)) {
+        const isBool = /^boolean\b/.test(it.type);
+        a.api.push({ prop: it.prop, reviewed: true, bool: isBool, from: it.impls, values: !isBool && it.values ? it.values.map((v) => ({ name: v, token: v, uses: 0, from: it.impls })) : null, default: null });
+        have.add(it.prop);
+      } else if (eff?.drop) a.dropped.push({ kind: it.kind, name: it.prop || it.impl, impls: it.impls || [it.impl], to: eff.to, q });
     }
   }
 
@@ -462,7 +491,8 @@ export function kitModel(inventory, { answers = new Map(), tokens = null, kits =
 export function apiTarget(a, axis, name) {
   const p = a.api.find((x) => x.axis === axis);
   if (!p) return null;
-  if (p.bool) return { prop: p.prop, token: null };
+  // A boolean prop is its own value only: another value of the axis is not it.
+  if (p.bool) return p.boolValue === name || (p.merged || []).some(([f, t]) => f === name && t === p.boolValue) ? { prop: p.prop, token: null } : null;
   const v = p.values?.find((x) => x.name === name);
   if (v) return { prop: p.prop, token: v.token };
   const m = (p.merged || []).find(([f]) => f === name);
@@ -471,8 +501,15 @@ export function apiTarget(a, axis, name) {
 
 // A question against the answers in questions.md: its status, and the answer if there is one.
 function settle(q, answers) {
-  q.factsHash = sha(JSON.stringify(q.facts));
-  const ans = answers.get(q.id);
+  // What the item is, not how many places it has; the old hash still holds.
+  const legacy = sha(JSON.stringify(q.facts));
+  q.factsHash = sha(JSON.stringify(q.hashFacts || q.facts.map((f) => String(f).replace(/\d+ мест[оа]?/g, '').replace(/\(\d+\)/g, ''))));
+  const ans0 = answers.get(q.id);
+  const ans = ans0 && ans0.factsHash === legacy ? { ...ans0, factsHash: q.factsHash } : ans0;
+  q.to = ans?.to || '';
+  q.audience = q.to || audienceOf({ ...q, flags: q.flags || [] });
+  if (ans?.words) q.human = ans.words;
+  q.wordsGiven = !!ans?.words;
   // The facts behind an answer changed: the answer moves to «Прежний ответ», the
   // question is open again as `stale` until someone answers it anew.
   if (ans?.answer && ans.factsHash && ans.factsHash !== q.factsHash) Object.assign(q, { status: 'stale', previous: `${ans.answer} (${ans.who || '—'}, ${ans.date || '—'})`, answer: '', who: '', date: '' });
@@ -512,7 +549,7 @@ const SIGNS = {
 // Props of any React component, not of the atom.
 const OWN_PROPS = new Set(['className', 'children', 'style', 'ref', 'key']);
 
-// `kit:` — `<file>` or `<file>#<Name>`: a component in the code (kit.implemented).
+// `kit:` — `<file>` or `<file>#<Name>`: a component in the code.
 export function resolveKitRef(ref, components, type) {
   const [raw, name] = String(ref).trim().split('#');
   const file = raw.replace(/\\/g, '/').replace(/^\.\//, '');
@@ -545,7 +582,7 @@ export function nativeProps(comp) {
   return out;
 }
 
-// What the kit component lacks or has against the API (kit.implemented): errors, and
+// What the kit component lacks or has against the API: errors, and
 // warnings where a question is still open or the values cannot be read.
 export function kitDiff(a) {
   if (!a.kit?.comp) return [];
@@ -616,5 +653,8 @@ const AXIS_RU_ = { emphasis: 'вид', style: 'обводка', tone: 'тон', 
 // `Icon button` → `IconButton`: the name of the kit component.
 export const pascal = (s) => String(s).split(/\s+/).filter(Boolean).map((w) => w[0].toUpperCase() + w.slice(1)).join('');
 export const axisRu = (a) => AXIS_RU_[a] || a;
+const cap = (s) => String(s).charAt(0).toUpperCase() + String(s).slice(1);
+// A prop value as the call site writes it, without braces and quotes: `{16}`, `"16"` → `16`.
+const lit = (v) => String(v ?? '').trim().replace(/^\{\s*([\s\S]*?)\s*\}$/, '$1').replace(/^(["'`])([\s\S]*)\1$/, '$2');
 export const places = (n) => `${n} ${n % 10 === 1 && n % 100 !== 11 ? 'место' : [2, 3, 4].includes(n % 10) && ![12, 13, 14].includes(n % 100) ? 'места' : 'мест'}`;
 export const slug = (s) => String(s).toLowerCase().replace(/[^a-z0-9а-яё]+/gi, '-').replace(/^-|-$/g, '');

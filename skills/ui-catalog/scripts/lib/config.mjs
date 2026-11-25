@@ -61,8 +61,11 @@ export function logoOf(root, files, libraryDirs = []) {
 }
 
 export function resolveOut(root, args = {}) {
-  if (args.out) return path.resolve(root, args.out);
-  return path.join(root, DEFAULT_OUT);
+  if (!args.out) return path.join(root, DEFAULT_OUT);
+  const out = path.resolve(root, args.out);
+  // The project folder itself is never the library: a relative --out is read from --root.
+  if (path.relative(path.resolve(root), out) === '') fail(`--out «${args.out}» — это сам корень проекта (${root}): каталог лёг бы среди кода. Путь --out считается от --root — укажи папку библиотеки абсолютным путём.`, 2);
+  return out;
 }
 
 // ignoreUnits entries: «id» or { id, why } — the reason is what check asks for.

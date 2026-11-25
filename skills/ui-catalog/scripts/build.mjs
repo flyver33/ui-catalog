@@ -14,7 +14,11 @@ import { runScan } from './scan.mjs';
 import { loadLibrary, componentHash, compDir, FOUNDATIONS_DIR } from './lib/library.mjs';
 import { foundationFiles, tokenRoles } from './lib/foundations.mjs';
 import { isKitMode, kitOf } from './lib/kit-run.mjs';
+import { reviewMark } from './lib/atom-spec.mjs';
+import { partItems, partLink, PARTS, readAnswers, QUESTIONS_FILE } from './lib/questions.mjs';
 import { patternState, instancesOf } from './lib/pattern-run.mjs';
+import { screensFacts, writeScreens, todayOf, wrapperImpls, legacyOnly } from './lib/screens.mjs';
+import { legacyMatcher } from './lib/intro.mjs';
 import { places, apiTarget, kitDiff, nativeProps } from './lib/kit.mjs';
 import { makeRenderer } from './lib/render.mjs';
 import { publicResolver, rebaseCss, rebaseHtml } from './lib/public.mjs';
@@ -24,7 +28,7 @@ import { FACT_SECTIONS } from './lib/facts.mjs';
 import { catalogTokens, KIND_RU, KINDS } from './lib/tokens.mjs';
 import { markdownToHtml, sections } from './lib/md.mjs';
 import { pinnedCss, parseCss } from './lib/css.mjs';
-import { textStyles } from './lib/typography.mjs';
+import { textStyles, fontTokenStyles, bodyFont, firstFamily, GENERIC_FAMILY } from './lib/typography.mjs';
 import { chromeTheme, fontStack } from './lib/theme.mjs';
 import { describeOverride } from './lib/overrides.mjs';
 import { describeSite, PROP_RU } from './lib/describe.mjs';
@@ -32,6 +36,7 @@ import { autoLabel, exampleContext } from './lib/examples.mjs';
 import { includes } from './lib/html.mjs';
 import { runAudit, RULES } from './audit.mjs';
 import { possibilities, POSSIBLE_RU } from './lib/possible.mjs';
+import { spaceModel, spaceEntries } from './lib/spacing.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const GALLERY_SRC = path.join(HERE, '..', 'gallery');
@@ -44,9 +49,11 @@ export async function runBuild(root, outDir, { gallery = true, quiet = false } =
   const kitMode = isKitMode(config);
   const specs = kitMode ? lib.components : [];
   if (kitMode) lib.components = [];
-  const kit = kitMode ? kitOf(inventory, outDir).kit : null;
+  const kit = kitMode ? kitOf(inventory, outDir, config).kit : null;
   // Composites found in the code (lib/pattern-run.mjs).
   const patterns = kitMode ? (() => { const st = patternState(inventory, config, outDir); return { state: st, all: st.composites.map((comp) => ({ comp, instances: instancesOf(comp, st, inventory) })) }; })() : null;
+  // Spacing and radius by role: measured on the code, decided in questions.md.
+  const space = kitMode ? spaceModel(root, inventory, { composites: patterns.all.map(({ comp, instances }) => ({ type: comp.data.type, name: comp.data.name || comp.id, instances })), atoms: kit.atoms, answers: readAnswers(path.join(outDir, QUESTIONS_FILE)), families: config.families || [] }) : null;
   const unitsById = new Map(inventory.units.map((u) => [u.id, u]));
   const galleryDir = path.join(outDir, 'gallery');
   const abs = (f) => path.join(root, f);
@@ -180,13 +187,19 @@ export async function runBuild(root, outDir, { gallery = true, quiet = false } =
 
   // Families, display faces first, the text face (the one on body) last —
   // the way type specimens are read. config.typography.families overrides the order.
-  const bodyFamily = (resolveAny(bodyRule?.decls.find((d) => d.prop === 'font-family')?.value || '').split(',')[0] || '').trim().replace(/^["']|["']$/g, '');
-  const famNames = [...new Set(typeStyles.map((s) => s.family))];
-  const maxSize = (f) => Math.max(...typeStyles.filter((s) => s.family === f && s.library).map((s) => s.size), 0);
-  const typeFamilies = famNames.map((f) => ({
-    family: f, role: f === bodyFamily ? 'text' : 'display',
-    token: inventory.tokens.find((t) => t.kind === 'font' && resolveAny(t.value).split(',')[0].trim().replace(/^["']|["']$/g, '') === f)?.name || null,
-  })).sort((a, b) => {
+  // The body family, read through a `font` shorthand token too; the style tokens are the scale.
+  const bodyFamily = firstFamily(resolveAny(bodyFont(bodyRule?.decls || [], resolveAny).family || '')) || '';
+  const fontStyles = fontTokenStyles(inventory.tokens.filter((t) => t.kind === 'font'), resolveAny);
+  const styleTokens = new Set(fontStyles.map((s) => s.token));
+  const familyTokens = inventory.tokens.filter((t) => t.kind === 'font' && !styleTokens.has(t.name));
+  // Families: tokens, body, the library's styles — not what only features set, not fallbacks.
+  const famNames = [...new Set([bodyFamily, ...familyTokens.map((t) => firstFamily(resolveAny(t.value))), ...fontStyles.map((s) => s.family), ...typeStyles.filter((s) => s.library).map((s) => s.family)])]
+    .filter((f) => f && !/[{}()]/.test(f) && !GENERIC_FAMILY.test(f));
+  const maxSize = (f) => Math.max(...typeStyles.filter((s) => s.family === f && s.library).map((s) => s.size), ...fontStyles.filter((s) => s.family === f).map((s) => s.size), 0);
+  const typeFamilies = famNames.map((f) => {
+    const token = familyTokens.find((t) => firstFamily(resolveAny(t.value)) === f);
+    return { family: f, role: f === bodyFamily ? 'text' : token && /monospace/.test(resolveAny(token.value)) ? 'mono' : 'display', token: token?.name || null };
+  }).sort((a, b) => {
     const order = config.typography?.families || [];
     const ia = order.indexOf(a.family), ib = order.indexOf(b.family);
     if (ia >= 0 || ib >= 0) return (ia < 0 ? 999 : ia) - (ib < 0 ? 999 : ib);
@@ -204,8 +217,8 @@ export async function runBuild(root, outDir, { gallery = true, quiet = false } =
   // ── foundations/ ────────────────────────────────────────────────────
   // A file per area used more than once; a stale one goes.
   const foundations = foundationFiles({
-    project: config.project, tokens, components, typeStyles, typeFamilies, icons, iconBase, iconUnit,
-    units: inventory.units, scaffold: config.scaffold || {},
+    project: config.project, tokens, components, typeStyles, typeFamilies, fontStyles, icons, iconBase, iconUnit,
+    units: inventory.units, scaffold: config.scaffold || {}, space,
   });
   const fDir = path.join(outDir, FOUNDATIONS_DIR);
   fs.rmSync(fDir, { recursive: true, force: true });
@@ -216,12 +229,23 @@ export async function runBuild(root, outDir, { gallery = true, quiet = false } =
     date: r.data.date || null, needs: r.data.needs || [], html: markdownToHtml(r.body, { link: (h) => mdLink(h, path.join(outDir, 'requests')), headingOffset: 1 }),
   }));
 
+  // The map of screens (lib/screens.mjs): the families from the config, for the agent.
+  const screens = kitMode && (config.families || []).length ? screensFacts(root, config, inventory, kit, patterns) : null;
+  if (screens) writeScreens(outDir, config, screens);
+
   // ── components.json (agents) ────────────────────────────────────────
   writeJson(path.join(outDir, 'components.json'), {
     $comment: 'Сгенерировано ui-catalog build. Правь <id>.md и examples/, затем пересобери.',
     project: config.project, generatedAt: inventory.generatedAt, mode: kitMode ? 'kit' : 'catalog',
-    composites: kitMode ? patterns.all.map(({ comp, instances }) => ({ id: comp.id, name: comp.data.name || comp.id, type: comp.data.type, kinds: comp.data.kinds || [], md: comp.file, instances: instances.map((x) => `${x.file}:${x.line}`) })) : undefined,
-    components: kitMode ? kitEntries(kit, specs) : components.map((c) => ({
+    // What people said the code does not show: requests, legacy, notes.
+    context: config.context || null,
+    // Spacing and radius by role, for ui-compose.
+    space: space ? spaceEntries(space) : undefined,
+    composites: kitMode ? patterns.all.map(({ comp, instances }) => ({ id: comp.id, name: comp.data.name || comp.id, type: comp.data.type, kinds: comp.data.kinds || [], md: comp.file, instances: instances.map((x) => `${x.file}:${x.line}`),
+      // The project components its instances are built on (Modal of dialogs).
+      roots: [...new Set(instances.map((x) => x.tree?.root).filter((r) => /^[A-Z]/.test(r || '')))] })) : undefined,
+    families: screens ? screens.families.map((f) => ({ name: f.name, match: f.match, files: f.files, messages: f.messages, atoms: f.atoms })) : undefined,
+    components: kitMode ? kitEntries(kit, specs, config, inventory) : components.map((c) => ({
       id: c.id, name: c.name, job: c.job, intents: c.intents, related: c.related,
       counterpart: c.counterpart, units: c.declared, md: c.md, stale: c.stale, todo: c.todo,
       usageCount: c.usageCount, fileCount: c.fileCount, modifiers: c.modifiers.map((m) => m.cls),
@@ -376,7 +400,7 @@ export function groupVariants(examples) {
 }
 
 // Kit mode: the atoms of the kit for ui-compose — what each will be, and what stands in now.
-function kitEntries(kit, specs) {
+function kitEntries(kit, specs, config, inventory) {
   return kit.atoms.map((a) => {
     const spec = specs.find((c) => c.id === a.id);
     const files = [...new Set(a.impls.flatMap((i) => (i.kind === 'raw' ? i.places.map((p) => p.file) : [i.file])))];
@@ -388,6 +412,7 @@ function kitEntries(kit, specs) {
       for (const x of v.impls.values()) maps.get(x.impl.key)?.push({ prop: to.prop, value: to.token, as: x.impl.kind === 'class' ? { cls: x.cls, token: x.token } : x.bool ? { prop: x.prop } : { prop: x.prop, value: x.token } });
     }
     const diff = kitDiff(a);
+    const gone = new Map(legacyOnly(a, inventory, legacyMatcher(config)).map((x) => [x.i.key, x.why]));
     return {
       id: a.id, name: a.name, type: a.type, job: spec?.data.job || '', intents: spec?.data.intents || [], related: [], counterpart: null,
       units: [], md: spec?.file || `atoms/${a.id}.md`, stale: false, todo: spec?.todo || 0,
@@ -402,18 +427,54 @@ function kitEntries(kit, specs) {
       implementations: a.impls.map((i) => ({
         name: i.name, kind: i.kind, file: i.file || null, line: i.line || null, uses: i.uses, kit: !!i.kit,
         ...(i.kind === 'class' ? { base: i.unit.id, tag: i.tag } : {}), maps: maps.get(i.key),
+        // What can stand in meanwhile: an exported component with the props its types have.
+        ...(i.kind === 'component' && i.comp ? { exported: i.comp.exported !== false, props: i.comp.props.map((p) => p.name), native: [...nativeProps(i.comp)] } : {}),
+        // Used only in code on its way out (context.legacy): never stands in.
+        ...(gone.has(i.key) ? { legacy: gone.get(i.key) } : {}),
       })),
+      // Components built on the atom: they stand in as they are.
+      // A wrapper spells values as the implementation it renders does, for the props it has.
+      wrappers: wrapperImpls(a, inventory).map((w) => {
+        const props = (w.comp?.props || []).map((p) => p.name);
+        const near = (f) => { const x = String(f || '').split('/'), y = String(w.file).split('/'); let n = 0; while (n < x.length && x[n] === y[n]) n++; return n; };
+        const wraps = a.impls.filter((i) => i.kind === 'component' && (w.comp?.renders || []).includes(String(i.name).replace(/ \(.*\)$/, ''))).sort((p, q) => near(q.file) - near(p.file))[0];
+        return { name: w.name, file: w.file, line: w.line, uses: w.uses, exported: w.comp?.exported !== false, props, native: w.comp ? [...nativeProps(w.comp)] : [], wraps: wraps?.name || null, maps: wraps ? (maps.get(wraps.key) || []).filter((m) => m.as?.prop && props.includes(m.as.prop)) : [] };
+      }),
       openQuestions: a.questions.filter((q) => q.status !== 'answered').length,
+      // Per family of screens: the implementations its files use, the most used first.
+      today: todayOf(a, config.families || [], inventory, legacyMatcher(config)).map((r) => ({ family: r.family, impls: r.list.map((x) => ({ name: x.i.name, uses: x.uses })) })),
       // Open questions about which atom an implementation is: a verdict on it rests on them.
       typeQuestions: a.questions.filter((q) => q.kind === 'type' && q.status !== 'answered').map((q) => ({ id: q.id, impl: q.impl, title: q.title })),
+      // What came from the code beyond the API, with its marks and answers: compose takes
+      // it by its status (gap.flagged).
+      review: [...(a.review || []), ...a.questions.filter((q) => q.kind === 'only-one')].map((q) => ({
+        id: q.id, kind: q.kind, prop: q.prop || null, impl: q.impl || null, implKey: q.implKey || null, impls: q.impls || [],
+        flags: (q.flags || []).map((x) => x.mark), to: (q.flags || []).find((x) => x.to)?.to || null,
+        status: q.status, answer: q.answer || '', mark: reviewMark(a, q),
+        ...(q.kind === 'only-one' ? { axis: q.axis, value: q.value, spellings: q.spellings || [] } : {}),
+      })),
+      unused: a.unused || { props: [], impls: [] },
     };
   });
+}
+
+// What the people of the project said the code does not show (context): read before anything.
+function projectNotes(config) {
+  const c = config.context;
+  if (!c) return [];
+  const notes = [...(c.notes || [])];
+  for (const l of c.legacy || []) notes.push(`\`${l.match}\` — не образец: ${l.why}`);
+  if (c.requests === 'none') notes.push('Запросы дизайнеру здесь не пишут: недостающее назови пользователю в ответе.');
+  for (const a of c.assumed || []) notes.push(`Предположение (ждёт ответа команды в questions.md): ${a.question} — ${a.assumed}`);
+  return notes.length ? ['## Особенности проекта', '', ...notes.map((n) => `- ${n}`), ''] : [];
 }
 
 function catalogKitMd(config, kit, specs, foundations, requests, patterns) {
   const L = [`# Дизайн-система — ${config.project}`, ''];
   L.push('> Сгенерировано `ui-catalog build`. Руками не править: источник — `atoms/<id>.md`, `questions.md` и код.', '');
+  L.push(...projectNotes(config));
   L.push('Как пользоваться: атом — компонент React-кита. Что брать, говорит `ui-compose`: `compose.mjs verdict <атом> [проп=значение …]` — компонент кита или, пока его нет, самую частую реализацию из «Что заменяет»; составное — `compose.mjs pattern <тип>`. Пишешь свой CSS — сначала открой нужную основу. Не нашёл подходящего — это пробел, см. `ui-compose`.', '');
+  if ((config.families || []).length) L.push('**Начни с карты экранов** — [screens.md](screens.md): семья файла, который меняешь, её образцы и что посмотреть перед тем, как добавлять (`query.mjs screens <файл>`).', '');
   if (foundations.length) {
     L.push('## Основы', '');
     for (const x of foundations) L.push(`- [${x.title}](foundations/${x.file}) — ${x.summary}`);
@@ -422,10 +483,10 @@ function catalogKitMd(config, kit, specs, foundations, requests, patterns) {
   L.push('## Атомы кита', '');
   for (const a of kit.atoms) {
     const spec = specs.find((c) => c.id === a.id);
-    const open = a.questions.filter((q) => q.status !== 'answered').length;
+    const open = PARTS.map((p) => [p, partItems(a, p.key).open.length]).filter(([, n]) => n).map(([p, n]) => `${p.title.toLowerCase()} ${n}`).join(', ');
     const diff = a.kit?.comp ? kitDiff(a).filter((d) => !d.warn).length : 0;
     const status = !spec?.data.kit ? 'в ките ещё нет' : a.kit?.error ? `kit: \`${spec.data.kit}\` — ${a.kit.error}` : `в ките: \`${spec.data.kit}\`${diff ? ` · расхождений со спекой ${diff}` : ''}`;
-    L.push(`- **${a.name}** \`${a.id}\` — ${spec?.data.job || '—'} · ${places(a.uses)}, реализаций ${a.impls.length} · ${status}${open ? ` · открытых вопросов ${open}` : ''} → [atoms/${a.id}.md](atoms/${a.id}.md)`);
+    L.push(`- **${a.name}** \`${a.id}\` — ${spec?.data.job || '—'} · ${places(a.uses)}, реализаций ${a.impls.length} · ${status}${open ? ` · на проверке: ${open}` : ''} → [atoms/${a.id}.md](atoms/${a.id}.md)`);
   }
   L.push('');
   if (patterns?.all.length) {
@@ -434,7 +495,7 @@ function catalogKitMd(config, kit, specs, foundations, requests, patterns) {
     L.push('');
   }
   const totalOpen = kit.atoms.flatMap((a) => a.questions).filter((q) => q.status !== 'answered').length;
-  if (totalOpen) L.push(`Открытые вопросы по атомам: ${totalOpen} — [questions.md](questions.md).`, '');
+  if (totalOpen) L.push(`На проверке — что пришло из кода и ещё не решено: ${PARTS.map((p) => `${partLink(p.key)} — ${kit.atoms.reduce((n, a) => n + partItems(a, p.key).open.length, 0)}`).join(', ')}. Помеченное (лазейка, синоним, дубль, редкое) в новом месте не бери, если в семье есть другое.`, '');
   const open = requests.filter((r) => r.status !== 'closed');
   if (open.length) {
     L.push('## Открытые запросы', '');
@@ -449,6 +510,7 @@ function catalogMd(config, components, foundations, icons, requests, undocumente
   const L = [];
   L.push(`# Дизайн-система — ${config.project}`, '');
   L.push('> Сгенерировано `ui-catalog build`. Руками не править: источник — `atoms/<id>.md`, `examples/<id>.html` и код (`foundations/`).', '');
+  L.push(...projectNotes(config));
   L.push('Как пользоваться: найди компонент по задаче или тегам, **открой его `atoms/<id>.md` перед использованием**, бери только классы из раздела «Варианты». Пишешь свой CSS (раскладка, цвет, текст) — сначала открой нужную основу. Не нашёл подходящего — это пробел, см. `ui-compose`.', '');
   if (foundations.length) {
     L.push('## Основы', '');

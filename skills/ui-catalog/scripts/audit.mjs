@@ -20,6 +20,9 @@ import { splitModifiers } from './lib/split.mjs';
 import { catalogTokens } from './lib/tokens.mjs';
 import { patternState, instancesOf } from './lib/pattern-run.mjs';
 import { COMPOSITE_TYPES, SLOT_RU, slotsOf } from './lib/composites.mjs';
+import { spaceModel, canonSpacing } from './lib/spacing.mjs';
+import { readAnswers, QUESTIONS_FILE } from './lib/questions.mjs';
+import { legacyMatcher } from './lib/intro.mjs';
 
 export const RULES = {
   'pseudo-only': { title: 'Модификатор только меняет состояние', severity: 3,
@@ -55,6 +58,9 @@ export const RULES = {
   'pattern-diverges': { title: 'Составное сделано по-разному', severity: 2,
     explain: 'Одна закономерность (пустое состояние, окно, сниппет) в разных местах собрана из разных частей: где-то нет заголовка, где-то действия.',
     options: { canon: 'привести экземпляры к канону — самой частой анатомии', component: 'вынести составное в общий компонент' } },
+  'space-off': { title: 'Отступ не по решённой роли', severity: 3,
+    explain: 'Люди решили, какой отступ между этими частями (questions.md, «Основы: отступы и скругления»), а экземпляр составного стоит с другим.',
+    options: { fix: 'поставить решённое значение роли', keep: 'оставить: здесь осознанно иначе' } },
   'pattern-twin': { title: 'Один блок сделан дважды', severity: 2,
     explain: 'Два компонента с одним именем в разных местах — экземпляры одной закономерности. Их правят по отдельности, и они расходятся.',
     options: { merge: 'оставить один компонент и использовать его в обоих местах' } },
@@ -67,6 +73,9 @@ export const RULES = {
   'type-local': { title: 'Стили текста вне базы', severity: 2,
     explain: 'Страницы и фичи задают размер, начертание и интерлиньяж своим CSS, в обход шкалы базы. Каждый такой стиль — решение, которое никто не принимал.',
     options: { consolidate: 'свести к стилям базы: где есть почти такой же — заменить на базовый', 'extend-scale': 'нужные добавить в шкалу базы' } },
+  'dead-class': { title: 'Класс ничего не делает', severity: 2,
+    explain: 'Класс начинается как значение семейства библиотеки, но ни одна таблица стилей его не задаёт. В разметке он читается как размер или вид, а на экране ничего не меняет.',
+    options: { remove: 'убрать класс из разметки', add: 'если значение нужно — добавить его в базу' } },
   'missing-state': { title: 'Нет обязательного состояния', severity: 1,
     explain: 'У компонента этого типа обычно есть состояние, которого в CSS нет. Новые фичи не должны его изобретать.',
     options: { add: 'добавить состояние в базу', 'not-needed': 'если продукту оно не нужно — ничего' } },
@@ -287,6 +296,9 @@ export async function runAudit(root, outDir, { quiet = false, scan = null, write
       { total: localAll.length, base: baseAll.length, byFamily, scopes, near: rows.filter((r) => r.near).length }, { component: null, detail: undefined, rows });
   }
 
+  // Classes of a library family no stylesheet has: they read as a value and do nothing.
+  for (const d of deadClasses(inventory)) add('dead-class', d.cls, d.unit, { family: d.unit.id, places: d.places }, { component: null });
+
   // Tokens the catalog leaves out (lib/tokens.mjs): declared and used nowhere; one value, several names.
   {
     const { unused, aliases } = catalogTokens(inventory.tokens);
@@ -303,6 +315,9 @@ export async function runAudit(root, outDir, { quiet = false, scan = null, write
     const state = patternState(inventory, config, outDir);
     const all = state.composites.map((comp) => ({ comp, instances: instancesOf(comp, state, inventory) }));
     const placeOf = (x) => ({ file: x.file, line: x.line, selector: x.decl || 'разметка на месте' });
+    // Spacing against the decided roles: only once people decided.
+    const space = spaceModel(root, inventory, { composites: all.map(({ comp, instances }) => ({ type: comp.data.type, name: comp.data.name || comp.id, instances })), answers: readAnswers(path.join(outDir, QUESTIONS_FILE)) });
+    const legacy = legacyMatcher(config);
     for (const { comp, instances } of all) {
       const T = COMPOSITE_TYPES[comp.data.type];
       const name = comp.data.name || comp.id;
@@ -317,6 +332,8 @@ export async function runAudit(root, outDir, { quiet = false, scan = null, write
         const off = known.filter((a) => want.some((s) => !a.slots[s])).map((a) => ({ at: `${a.x.file}:${a.x.line}`, missing: want.filter((s) => !a.slots[s]).map((s) => SLOT_RU[s] || s) }));
         if (off.length && canonCount >= 2) add('pattern-diverges', name, pseudo, { name, canon: want.map((s) => SLOT_RU[s] || s).join(' + '), canonCount, total: known.length, off }, { component: null, decl: known.filter((a) => off.some((o) => o.at === `${a.x.file}:${a.x.line}`)).map((a) => placeOf(a.x)) });
       }
+      const { off: spaceOff } = canonSpacing(instances, space, { legacy });
+      if (spaceOff.length) add('space-off', name, pseudo, { name, off: spaceOff }, { component: null, decl: spaceOff.map((o) => ({ file: o.file, line: o.line, selector: o.label })) });
       const byDecl = new Map();
       for (const x of instances.filter((y) => y.decl)) (byDecl.get(x.decl) || byDecl.set(x.decl, new Set()).get(x.decl)).add(x.file);
       for (const [decl, files] of byDecl) if (files.size > 1) add('pattern-twin', decl, pseudo, { decl, files: [...files], name }, { component: null, decl: instances.filter((x) => x.decl === decl).map(placeOf) });
@@ -340,6 +357,31 @@ export async function runAudit(root, outDir, { quiet = false, scan = null, write
   return result;
 }
 
+// Classes in the markup that start with the root of a library family (`g-btn-m`, `g-btn--huge`)
+// and that no stylesheet defines, with every place they stand.
+export function deadClasses(inventory) {
+  const defined = new Set();
+  for (const u of inventory.units || []) {
+    defined.add(u.id);
+    for (const k of Object.keys(u.modifiers || {})) defined.add(k);
+    for (const k of Object.keys(u.elements || {})) defined.add(k);
+  }
+  const roots = (inventory.units || []).filter((u) => u.library).sort((a, b) => b.id.length - a.id.length);
+  const uses = [
+    ...(inventory.units || []).flatMap((u) => (u.usages || []).map((x) => ({ file: x.file, line: x.line, classes: x.classes || [] }))),
+    ...(inventory.react?.raw || []).map((x) => ({ file: x.file, line: x.line, classes: x.classes || [] })),
+  ];
+  const found = new Map();
+  for (const x of uses) for (const cls of x.classes) {
+    if (defined.has(cls)) continue;
+    const unit = roots.find((u) => cls.startsWith(u.id + '-'));
+    if (!unit) continue;
+    const d = found.get(cls) || found.set(cls, { cls, unit, places: [] }).get(cls);
+    if (!d.places.some((p) => p.file === x.file && p.line === x.line)) d.places.push({ file: x.file, line: x.line });
+  }
+  return [...found.values()].sort((a, b) => b.places.length - a.places.length || a.cls.localeCompare(b.cls));
+}
+
 function factLine(f) {
   const x = f.facts;
   const tags = (t) => Object.entries(t || {}).map(([k, v]) => `${k} ×${v}`).join(', ') || '—';
@@ -352,6 +394,7 @@ function factLine(f) {
     case 'near-duplicate': return `\`${x.pair.join('` и `')}\` — ${x.verdict}: ` + x.per.map((p) => `${p.bg}: фон ΔE ${p.dBg}${p.dText != null ? `, текст ΔE ${p.dText}` : ''}`).join('; ');
     case 'weak-hover': return `\`${f.subject}\`: ` + x.per.map((p) => `${p.bg}: ΔE ${p.dE}, светлее на ${p.dL}`).join('; ');
     case 'missing-state': return `\`${f.unit}\` (тип ${TYPES[x.type]?.name || x.type}): нет ${x.missing.map((s) => `«${STATE_VOCAB[s] || s}»`).join(', ')}`;
+    case 'dead-class': return `\`${f.subject}\` (семейство \`${x.family}\`): ${x.places.slice(0, 5).map((p) => `\`${p.file}:${p.line}\``).join(', ')}${x.places.length > 5 ? ` и ещё ${x.places.length - 5}` : ''}`;
     default: return f.subject;
   }
 }
@@ -413,6 +456,10 @@ function plain(f, ctx) {
       title: `${x.name}: ${x.off.length} из ${x.total} собраны не по канону`,
       what: `Канон — ${x.canon} (так устроены ${x.canonCount} из ${x.total}). Отступают:\n\n${x.off.map((o) => `- ${c}${o.at}${c} — нет: ${o.missing.join(', ')}`).join('\n')}`,
       why: 'Одна и та же ситуация выглядит по-разному на разных экранах: человек не узнаёт её, а разработчик не знает, какую копию брать за образец.' };
+    case 'space-off': return {
+      title: `${x.name}: отступ не по решённой роли — ${x.off.length}`,
+      what: x.off.map((o) => `- ${c}${o.file}:${o.line}${c} — ${o.label.toLowerCase()}: ${o.px}px, решено ${o.want}px`).join('\n'),
+      why: 'Решённый отступ — один на весь продукт; экземпляр с другим выглядит как ошибка вёрстки и сбивает того, кто возьмёт его за образец.' };
     case 'pattern-twin': return {
       title: `${c}${x.decl}${c} сделан дважды`,
       what: `Компонент ${c}${x.decl}${c} описан в ${x.files.length} местах: ${x.files.map((ff) => `${c}${ff}${c}`).join(', ')}. Это экземпляры одной закономерности «${x.name}».`,
@@ -433,6 +480,10 @@ function plain(f, ctx) {
       title: `${nm}: нет состояний ${x.missing.map((s) => `«${STATE_RU(s)}»`).join(', ')}`,
       what: `У компонента «${nm}» в CSS нет ${x.missing.map((s) => `«${STATE_RU(s)}»`).join(', ')}. Для компонента типа «${TYPES[x.type]?.name || x.type}» они обычно нужны.`,
       why: 'Если состояния нет в библиотеке, разработчик либо придумает его сам, либо будет его избегать — и интерфейс получит то, чего дизайнер не рисовал.' };
+    case 'dead-class': return {
+      title: `${c}${f.subject}${c} ничего не делает`,
+      what: `Класс ${c}${f.subject}${c} стоит в разметке как значение семейства ${c}${x.family}${c}, но ни одна таблица стилей его не задаёт.\n\n| Где |\n|---|\n${x.places.map((p) => `| ${c}${p.file}:${p.line}${c} |`).join('\n')}`,
+      why: 'Он читается как размер или вид, а на экране его нет: следующий, кто скопирует разметку, решит, что такое значение есть.' };
     default: return { title: `${nm}: ${f.subject}`, what: factLine(f), why: '' };
   }
 }

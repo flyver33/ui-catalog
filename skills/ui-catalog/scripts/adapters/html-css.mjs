@@ -343,6 +343,11 @@ export function scan(root, config) {
 // Only rules that set a size count — a lone font-weight is a tweak, not a style.
 function typographyOf(decls) {
   const d = Object.fromEntries(decls.map((x) => [x.prop, x.value.replace(/\s*!important$/, '')]));
+  // A brace inside a value: a stylesheet the parser could not read (minified), not a style.
+  if (['font', 'font-size', 'font-family', 'font-weight', 'line-height'].some((p) => /[{}]/.test(d[p] || ''))) return null;
+  // `font: var(--font-…)`: a style token; build resolves it.
+  const fontVar = /^var\(\s*--[\w-]+\s*\)$/.test((d.font || '').trim()) ? d.font.trim() : null;
+  if (fontVar) return { size: d['font-size'] || null, weight: d['font-weight'] || null, family: d['font-family'] || null, lineHeight: d['line-height'] || null, letterSpacing: d['letter-spacing'] || null, font: fontVar };
   let size = d['font-size'], weight = d['font-weight'], family = d['font-family'], lh = d['line-height'];
   if (d.font) {
     // font: [style] [weight] size[/line-height] family

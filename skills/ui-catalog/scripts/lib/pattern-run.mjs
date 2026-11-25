@@ -7,6 +7,8 @@ import { parseFrontmatter, stringifyFrontmatter } from './frontmatter.mjs';
 import { findCandidates, falseCases, groupOf, nameFor, slotsOf, COMPOSITE_TYPES, SLOT_RU, KIND_RU } from './composites.mjs';
 import { DRAFTS } from './prose.mjs';
 import { places } from './kit.mjs';
+import { legacyMatcher } from './intro.mjs';
+import { spaceModel, canonSpacing } from './spacing.mjs';
 
 export const COMPOSITES_DIR = 'composites';
 export const CANDIDATES_FILE = 'candidates.md';
@@ -59,7 +61,7 @@ export function instancesOf(comp, state, inventory) {
   return out;
 }
 
-export function patternSections(comp, instances, { root, outDir, all, trees = null }) {
+export function patternSections(comp, instances, { root, outDir, all, trees = null, legacy = () => null, space = null }) {
   const type = comp.data.type;
   const T = COMPOSITE_TYPES[type] || { slots: [], kinds: [] };
   const dir = path.join(outDir, COMPOSITES_DIR);
@@ -110,10 +112,20 @@ export function patternSections(comp, instances, { root, outDir, all, trees = nu
   {
     const L = [NOTE, ''];
     const counts = new Map();
-    for (const a of known) { const k = Object.entries(a.slots).filter(([, v]) => v).map(([s]) => s).join(' + ') || '—'; counts.set(k, (counts.get(k) || 0) + 1); }
+    // Code on its way out (context.legacy) is never the canon.
+    for (const a of known.filter((k) => legacy(k.x.file) == null)) { const k = Object.entries(a.slots).filter(([, v]) => v).map(([s]) => s).join(' + ') || '—'; counts.set(k, (counts.get(k) || 0) + 1); }
     const top = [...counts].sort((a, b) => b[1] - a[1])[0];
-    if (top) L.push(`${top[0].split(' + ').map((s) => SLOT_RU[s] || s).join(' + ')} — так устроены ${top[1]} из ${known.length}. Новое такого рода собирай так же.`);
+    // No slots: the canon is the component most instances put (a loading state — Spinner).
+    const live = (T.slots.length ? known : anat).filter((k) => legacy(k.x.file) == null);
+    const comps = new Map();
+    for (const a of live) for (const c of new Set(a.x.tree?.components || [])) comps.set(c, (comps.get(c) || 0) + 1);
+    const most = [...comps].sort((a, b) => b[1] - a[1])[0];
+    if ((!top && !T.slots.length) || top?.[0] === '—') L.push(most ? `Отдельных частей нет: в ${most[1]} из ${live.length} стоит ${code(most[0])}. Новое такого рода собирай так же; где и как — в «Экземплярах».` : 'Канон по разметке не виден: экземпляры — места использования.');
+    else if (top) L.push(`${top[0].split(' + ').map((s) => SLOT_RU[s] || s).join(' + ')} — так устроены ${top[1]} из ${known.filter((k) => legacy(k.x.file) == null).length}. Новое такого рода собирай так же.`);
     else L.push('Канон по разметке не виден: экземпляры — места использования.');
+    // The spacing between the parts, by role.
+    const sp = space && canonSpacing(instances, space, { legacy });
+    if (sp?.line) L.push('', sp.line);
     out['Канон'] = L.join('\n');
   }
   {
@@ -140,7 +152,7 @@ export function rewriteFile(text, sections) {
   return head + '\n' + PAT_SECTIONS.map((s) => `## ${s}\n\n${PAT_AGENT.includes(s) ? own.get(s) ?? 'TODO' : sections[s]}`).join('\n\n') + '\n';
 }
 
-export function runPatternGenerate(root, outDir, inventory, config, { quiet = false } = {}) {
+export function runPatternGenerate(root, outDir, inventory, config, { quiet = false, atoms = [], answers = new Map() } = {}) {
   let state = patternState(inventory, config, outDir);
   const assigned = new Map();
   for (const comp of state.composites) for (const id of asList(comp.data.candidates)) assigned.set(id, comp.id);
@@ -166,8 +178,10 @@ export function runPatternGenerate(root, outDir, inventory, config, { quiet = fa
   // Describe every composite from its instances.
   state = patternState(inventory, config, outDir);
   const all = state.composites.map((comp) => ({ comp, instances: instancesOf(comp, state, inventory) }));
+  // Spacing and radius by role: measured from the code, decided by the answers.
+  const space = spaceModel(root, inventory, { composites: all.map(({ comp, instances }) => ({ type: comp.data.type, name: comp.data.name || comp.id, instances })), atoms, answers });
   for (const { comp, instances } of all) {
-    const next = rewriteFile(comp.text, patternSections(comp, instances, { root, outDir, all, trees: inventory.react?.trees }));
+    const next = rewriteFile(comp.text, patternSections(comp, instances, { root, outDir, all, trees: inventory.react?.trees, legacy: legacyMatcher(config), space }));
     if (next !== comp.text) writeText(path.join(outDir, comp.file), next);
   }
   writeCandidates(path.join(outDir, CANDIDATES_FILE), config.project, state, all);
@@ -177,7 +191,7 @@ export function runPatternGenerate(root, outDir, inventory, config, { quiet = fa
     const unseen = state.candidates.filter((c) => !all.some(({ comp }) => asList(comp.data.candidates).includes(c.id)) && !state.rejected.has(c.id) && (state.groups.get(groupOf(c).id)?.candidates.length || 0) >= 2).length;
     if (unseen) console.log(`  не разобрано кандидатов: ${unseen} — посмотри их в ${CANDIDATES_FILE} («не разобран»)`);
   }
-  return { state, all, written };
+  return { state, all, written, space };
 }
 
 function writeCandidates(file, project, state, all) {

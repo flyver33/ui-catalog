@@ -30,9 +30,11 @@ import { unitsOf, splitModifiers, rootOfEntry, SPLIT_TYPES } from './lib/split.m
 import { factContext, factSections, whenCells, sectionText, normalize, FACT_SECTIONS } from './lib/facts.mjs';
 import { proseProblems, counterpartProblems, classesInText } from './lib/prose.mjs';
 import { isKitMode, atomHash } from './lib/kit-run.mjs';
-import { kitChecks, patternChecks } from './lib/kit-check.mjs';
+import { kitChecks, patternChecks, screensChecks } from './lib/kit-check.mjs';
 import { patternHash } from './lib/pattern-run.mjs';
 import { SCAFFOLD_PROPS, scaffoldTail, scaffoldProblems } from './lib/scaffold.mjs';
+import { contextProblems } from './lib/intro.mjs';
+import { readAnswers, QUESTIONS_FILE } from './lib/questions.mjs';
 
 const LATIN_NAME = /^[A-Z][A-Za-z0-9]*( [A-Za-z0-9]+)*$/;
 
@@ -80,6 +82,7 @@ export async function runCheck(root, outDir, { seal = null, strict = false, json
     const modShortKit = new Set([...known].filter((x) => x.includes('--') && !x.startsWith('--')).map((x) => '--' + x.split('--').slice(1).join('--')));
     kitState = { specs, ...kitChecks({ root, outDir, inventory, config, specs, E, W, I, known, modifiers: modShortKit }) };
     kitState.patterns = patternChecks({ root, outDir, inventory, config, E, W, I, known, modifiers: modShortKit });
+    screensChecks({ root, outDir, config, E, W, kit: kitState.kit, inventory });
   }
 
   // The project's markup and scripts outside the library, read once (ex.content).
@@ -370,8 +373,12 @@ export async function runCheck(root, outDir, { seal = null, strict = false, json
   }
 
   // Config: only keys of the format (cfg.keys).
-  const CONFIG_KEYS = ['$comment', 'adapter', 'project', 'styles', 'tokens', 'icons', 'scopes', 'showcase', 'exclude', 'ignoreUnits', 'scaffold', 'labels', 'reference', 'issuesFile', 'brand', 'classPrefix', 'editor', 'frame', 'lang', 'typography', 'messages', 'stories', 'rejectPatterns'];
+  const CONFIG_KEYS = ['$comment', 'adapter', 'project', 'styles', 'tokens', 'icons', 'scopes', 'showcase', 'exclude', 'ignoreUnits', 'scaffold', 'labels', 'reference', 'issuesFile', 'brand', 'classPrefix', 'editor', 'frame', 'lang', 'typography', 'messages', 'stories', 'families', 'outside', 'context', 'rejectPatterns'];
   for (const k of Object.keys(config).filter((x) => !x.startsWith('__'))) if (!CONFIG_KEYS.includes(k)) E('cfg.keys', 'config', `в catalog.config.json поле «${k}», которого нет в формате`, 'убери его');
+  // The introduction: what people said the code does not show; suspects asked once; the branch.
+  for (const p of contextProblems(root, config, { answers: readAnswers(path.join(outDir, QUESTIONS_FILE)) })) ({ E, W, I })[p.level](p.rule, p.id, p.msg, p.fix);
+  // No designer takes requests: a gap is told to the user, never written as a file.
+  if (config.context?.requests === 'none') for (const r of lib.requests) E('gap.no-requests', r.id, `запрос ${r.file}, а запросы дизайнеру здесь не пишут (context.requests: none)`, 'скажи пробел пользователю в ответе и удали файл запроса');
   for (const k of Object.keys(config.reference || {})) if (!['kind', 'name', 'source', 'lang'].includes(k)) E('cfg.reference', 'config', `reference.${k} — такого поля нет`, 'reference: kind, name, source, lang');
   for (const f of ['decisions.json', 'audit.json', 'issues']) if (fs.existsSync(path.join(outDir, f))) W('cfg.keys', 'library', `в каталоге лежит ${f} — его больше нет в формате`, 'несостыковки теперь в ../ui-issues.md; файл можно удалить');
 
@@ -457,8 +464,8 @@ export async function runCheck(root, outDir, { seal = null, strict = false, json
   // A seal says «this guideline matches the code». It is refused while the component has
   // errors or TODO: you cannot vouch for what check says is wrong.
   if (seal && kitMode) {
-    // kit.open: a spec with open questions is not sealed.
-    // A spec is sealed only without errors, TODO and open questions.
+    // A spec is sealed without errors and TODO; open questions do not block it: an answer
+    // changes the atom's facts and breaks the seal of exactly that atom.
     const ids = seal === 'all' ? [...kitState.specs.map((c) => c.id), ...(kitState.patterns?.all || []).map((x) => x.comp.id)] : String(seal).split(',').map((x) => x.trim());
     let refused = 0;
     for (const id of ids) {
@@ -481,10 +488,9 @@ export async function runCheck(root, outDir, { seal = null, strict = false, json
       }
       if (!c || !a) { console.error(`  нет спеки атома или составного ${id}`); refused++; continue; }
       const own = errors.filter((e) => e.id === id);
-      const open = a.questions.filter((q) => q.status !== 'answered').length;
-      if (own.length || open) {
+      if (own.length) {
         refused++;
-        console.log(`  не запечатан ${id}: ${[own.length ? `ошибок ${own.length}` : '', open ? `открытых вопросов ${open}` : ''].filter(Boolean).join(', ')}`);
+        console.log(`  не запечатан ${id}: ошибок ${own.length}`);
         for (const e of own) console.log(`    ${e.msg} [${e.rule}]\n      → ${e.fix}`);
         continue;
       }

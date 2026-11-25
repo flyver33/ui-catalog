@@ -37,5 +37,12 @@
   ],
   "ignoreUnits": [],
   "classPrefix": null,
-  "editor": "vscode"
+  "editor": "vscode",
+  "context": {
+    "askedAt": "2026-11-23",
+    "requests": "designer",
+    "notes": [
+      "Страницы в pages/ — примеры использования, не библиотека."
+    ]
+  }
 }

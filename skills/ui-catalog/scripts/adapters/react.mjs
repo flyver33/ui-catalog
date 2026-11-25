@@ -300,6 +300,9 @@ export function scan(root, config) {
         classes: [...new Set(nodes.flatMap((n) => classesOf(n).global))].sort(),
         // What the block is made of — the slots of a composite are read from these.
         parts: partsOf(nodes, classesOf),
+        // Its elements in the order of the code, with their parts and classes: the spacing
+        // between the parts is read from these.
+        ...spacingNodes(info, k, subtree(k), classesOf),
         // Project components inside: a slot the block lacks may be in their own tree.
         inner: [...new Set(nodes.slice(1).filter((n) => n.name && isComponentName(n.name)).map((n) => bindingOf(info, n.name)).filter(Boolean).map((d) => `${d.file}#${d.name}`))].slice(0, 10),
         tags: [...new Set(nodes.map((n) => n.name).filter((n) => n && !isComponentName(n)))].sort(),
@@ -368,6 +371,40 @@ function partsOf(nodes, classesOf) {
   // A second heading is a text under the first (a subtitle, a lead).
   if (out.heading > 1) { out.text += out.heading - 1; out.heading = 1; }
   return out;
+}
+
+// The part one element is, for spacing: the outermost of these in a block are its parts.
+const LABEL = /(^|[-_])label|[a-z]Label(?![a-z])/;
+function partKind(n, cls) {
+  if (PART.heading(n, cls)) return 'heading';
+  if (PART.field(n)) return 'field';
+  // A close control is not content: nothing is spaced from it by role.
+  if (PART.close(n, cls)) return 'close';
+  if (PART.action(n)) return 'action';
+  if (n.name === 'label' || cls.some((c) => LABEL.test(c))) return 'label';
+  if (PART.media(n)) return 'media';
+  const fromCode = n.exprs.some((x) => !CONTENT_EXPR.test(x.code) && TEXT_EXPR.test(x.code));
+  return n.texts.length || fromCode ? 'text' : '';
+}
+// The elements of a block with their parent, classes and part, in the order of the code —
+// only for a block of two parts or more, or with a list, and of at most 80 elements.
+function spacingNodes(info, k, sub, classesOf) {
+  if (sub.length > 80) return {};
+  const order = [...sub].sort((a, b) => a - b);
+  const pos = new Map(order.map((j, i) => [j, i]));
+  const nodes = order.map((j) => {
+    const n = info.elements[j];
+    const c = classesOf(n);
+    const kind = partKind(n, c.global.concat(c.module.map((m) => m.split('#')[1] || '')));
+    const out = { t: n.name || '<>', l: n.line, p: j !== k && pos.has(n.parent) ? pos.get(n.parent) : -1 };
+    if (c.global.length) out.g = c.global;
+    if (c.module.length) out.m = c.module;
+    if (kind) out.k = kind;
+    if (j !== k && /\.map\(/.test((n.ctx?.before || '').slice(-80))) out.mp = 1;
+    return out;
+  });
+  const parts = nodes.filter((x) => ['heading', 'text', 'action', 'field', 'label'].includes(x.k)).length;
+  return parts >= 2 || nodes.some((x) => x.mp) ? { nodes } : {};
 }
 
 // Where a placed element sits, from the code just before it.

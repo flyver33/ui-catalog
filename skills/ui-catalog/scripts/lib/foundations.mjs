@@ -2,6 +2,7 @@
 // The roles of tokens, their state rows and the
 // background/text pairs come from how the CSS uses them, never from names or comments.
 import { parseColor, contrast } from './color.mjs';
+import { roleRule, spacingSection, radiusSection } from './spacing.mjs';
 
 // ── roles of a token ──────────────────────────────────────
 const USES = [
@@ -130,7 +131,10 @@ const code = (s) => '`' + s + '`';
 const fmtRatio = (r) => (r == null ? 'контраст не посчитать' : `${r.toFixed(1)}:1${r < 4.5 ? ' · ниже AA для текста' : ''}`);
 
 export function foundationFiles(ctx) {
-  const { project, tokens, components, typeStyles = [], typeFamilies = [], icons = [], iconBase, iconUnit, units = [], scaffold = {} } = ctx;
+  const { project, tokens, components, typeStyles = [], typeFamilies = [], fontStyles = [], icons = [], iconBase, iconUnit, units = [], scaffold = {}, space = null } = ctx;
+  // A decided (or most used) value per role is a rule of its file.
+  const roleRules = (list) => (list || []).map(roleRule).filter(Boolean);
+  const measured = (list) => (list || []).reduce((n, r) => n + r.values.reduce((m, v) => m + v.count, 0), 0);
   const nameOf = (id) => components.find((c) => c.id === id)?.name || id;
   const compList = (t) => (t.components || []).map(nameOf).join(', ') || '—';
   const head = (title, rules) => [`# ${title} — ${project}`, '', '> Сгенерировано `ui-catalog build` из кода. Руками не править.', '', '## Правила', '', ...rules.map((r) => `- ${r}`), ''];
@@ -183,22 +187,31 @@ export function foundationFiles(ctx) {
 
   // typography.md
   {
-    const base = typeStyles.filter((s) => s.library);
+    // Library styles set by a style token are that token: listed once, as the token.
+    const base = typeStyles.filter((s) => s.library && !(fontStyles.length && s.sites.every((x) => x.font)));
     const fonts = ofKind('font');
     const count = base.reduce((n, s) => n + s.sites.length, 0) + uses(fonts);
+    const top = [...fontStyles].sort((a, b) => b.uses - a.uses)[0];
+    const sameToken = (s) => fontStyles.find((t) => t.family === s.family && t.size === s.size && t.weight === s.weight && t.lineHeight === s.lineHeight && !s.letterSpacing);
     const L = head('Текст', [
-      'Новый текст набирай одним из стилей шкалы целиком: семейство, размер, начертание, интерлиньяж, трекинг. Свой не собирай.',
+      ...(fontStyles.length ? [`Новый текст набирай стилем-токеном целиком: ${code(`font: var(${top.token})`)} — семейство, размер, начертание и интерлиньяж сразу. Свой не собирай.`] : ['Новый текст набирай одним из стилей шкалы целиком: семейство, размер, начертание, интерлиньяж, трекинг. Свой не собирай.']),
       'Семейство — токеном шрифта, если он есть.',
       'Нужного стиля нет — это запрос, а не новый размер.',
     ]);
     if (typeFamilies.length) {
       L.push('## Семейства', '');
-      for (const f of typeFamilies) L.push(`- **${f.family}** — ${f.role === 'text' ? 'текстовое (на body)' : 'акцидентное'}${f.token ? ` · токен ${code(f.token)}` : ''}`);
+      for (const f of typeFamilies) L.push(`- **${f.family}** — ${f.role === 'text' ? 'текстовое (на body)' : f.role === 'mono' ? 'моноширинное' : 'акцидентное'}${f.token ? ` · токен ${code(f.token)}` : ''}`);
+      L.push('');
+    }
+    // The style tokens are the scale: what the project named.
+    if (fontStyles.length) {
+      L.push('## Стили-токены', '');
+      for (const s of fontStyles) L.push(`- ${code(s.token)} — **${s.name}** · мест ${s.uses}`);
       L.push('');
     }
     if (base.length) {
-      L.push('## Шкала', '');
-      for (const s of base) L.push(`- **${s.name}** — ${code(s.css.replace(/\n/g, ' '))}` + (s.components.length ? ` · в: ${s.components.map(nameOf).join(', ')}` : ''));
+      L.push(fontStyles.length ? '## Стили в CSS библиотеки без токена' : '## Шкала', '');
+      for (const s of base) L.push(`- **${s.name}** — ${code(s.css.replace(/\n/g, ' '))}` + (sameToken(s) ? ` · то же, что ${code(sameToken(s).token)} — бери токен` : '') + (s.components.length ? ` · в: ${s.components.map(nameOf).join(', ')}` : ''));
       const local = typeStyles.length - base.length;
       if (local) L.push('', `Ещё ${local} стилей задали страницы и фичи сами — их не повторять.`);
       L.push('');
@@ -209,10 +222,11 @@ export function foundationFiles(ctx) {
   // shape.md
   {
     const radius = ofKind('radius'), shadow = ofKind('shadow');
-    const L = head('Форма', ['Скругления и тени — только токенами.', 'Нужного нет — это запрос (токен), а не новое значение.']);
+    const L = head('Форма', ['Скругления и тени — только токенами.', ...(space ? ['Скругление — по роли элемента (ниже), не у соседнего блока.', ...roleRules(space.radius)] : []), 'Нужного нет — это запрос (токен), а не новое значение.']);
+    if (space) L.push(...radiusSection(space));
     if (radius.length) L.push('## Скругления', '', ...tokenTable(radius));
     if (shadow.length) L.push('## Тени', '', ...tokenTable(shadow));
-    add('shape', 'Форма', 'скругления и тени только токенами', uses(radius) + uses(shadow), L);
+    add('shape', 'Форма', 'скругления и тени только токенами', uses(radius) + uses(shadow) + measured(space?.radius), L);
   }
 
   // spacing.md
@@ -220,15 +234,16 @@ export function foundationFiles(ctx) {
     const size = ofKind('size');
     const scale = libraryValues(units, 'spacing');
     const L = head('Отступы и размеры', size.length
-      ? ['Размеры — токенами.', 'Отступы — из значений, которые использует библиотека (ниже); новое значение — запрос.']
-      : ['Токенов размеров нет: отступы бери из значений, которые использует сама библиотека (ниже).', 'Значения не из списка — не вписывать: это запрос.']);
+      ? ['Размеры — токенами.', ...(space ? ['Отступ между частями — по роли: что с чем рядом (ниже), а не как у соседнего блока; новый элемент между двумя частями берёт роль своей связи, а до следующей части остаётся её роль.', ...roleRules(space.roles)] : []), 'Отступы — из значений, которые использует библиотека (ниже); новое значение — запрос.']
+      : ['Токенов размеров нет: отступы бери из значений, которые использует сама библиотека (ниже).', ...(space ? roleRules(space.roles) : []), 'Значения не из списка — не вписывать: это запрос.']);
+    if (space) L.push(...spacingSection(space));
     if (size.length) L.push('## Токены', '', ...tokenTable(size));
     if (scale.length) {
       L.push('## Отступы в CSS библиотеки', '');
       for (const v of scale) L.push(`- ${code(v.value)} ×${v.count} — ${v.props.join(', ')}`);
       L.push('');
     }
-    add('spacing', 'Отступы и размеры', size.length ? 'размеры токенами, отступы из шкалы' : 'отступы из шкалы библиотеки', uses(size) + scale.reduce((n, v) => n + v.count, 0), L);
+    add('spacing', 'Отступы и размеры', size.length ? 'размеры токенами, отступы из шкалы' : 'отступы из шкалы библиотеки', uses(size) + scale.reduce((n, v) => n + v.count, 0) + measured(space?.roles), L);
   }
 
   // motion.md

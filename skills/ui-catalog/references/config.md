@@ -43,8 +43,79 @@ is wrong for this project; what scripts write there, you do not edit.
 
   *Only the agent:* a wrong detection shows only against the project as a person sees
   it; the scan summary is what you compare.
+- **cfg.families** (check) — React: `families` — the families of screens, parts of the
+  product built alike (the employer's cabinet, the candidate's profile, a landing):
+  `[{ "name": "Кабинет работодателя", "match": ["app/(shell)/employer/**", "features/employerVacancies/**"] }]`.
+  A family is where a builder takes the size of a button and the spacing from: draw the
+  line where the code changes its way — another button, another stylesheet, another
+  message file — not by route. First match wins, as with `scopes`. Missing in kit mode, a
+  name that is not 1–4 words or has `TODO`, a glob that matches no file of the project
+  is an error. You set it after the first scan; `build` writes the families'
+  facts into `screens.md` ([screens.md](screens.md)).
+- **cfg.families-cover** (check) — Files that use the library's atoms but are in no family
+  are an error, by folder (two levels), most used first, until it is decided once: the
+  folder goes into a family (a new one, or the match of one), or into `outside` with why it
+  needs none — `"outside": [{ "match": "widgets/app-header/**", "why": "шапка — сама себе
+  образец" }]` (decision of 2026-11-24: as a warning it was left; the messenger, a part of the
+  product, had no family and no samples). A builder changing such a part gets no samples
+  and no «Что брать сегодня». A folder with one file and fewer than
+  5 uses is not listed; the library itself — the files where atoms are defined and the
+  `library` scopes — is not counted.
 - **cfg.ignore-why** (check) — Every `ignoreUnits` entry says why:
   `{ "id": "gm-old", "why": "нигде не используется" }`. A bare id is a warning.
+
+## Introduction to the project
+
+What the code does not say — what is not the product, what is on its way out, who
+answers, whether a designer takes requests — is asked once, before the first `generate`,
+and kept in the config (decision of 2026-11-23: a minified demo stylesheet put garbage
+into the type scale, requests drawn for mock-ups looked like the product's gaps, and the
+catalog was built from a branch someone was changing).
+
+```json
+"context": {
+  "askedAt": "2026-11-23",
+  "branch": "master",
+  "kept": ["shared/ui/stories/**"],
+  "legacy": [{ "match": "app/old-cabinet/**", "why": "переписывают на кит" }],
+  "requests": "designer",
+  "notes": ["Ветки design/* — макеты, не продукт: каталог по ним не собирать."],
+  "assumed": [{ "question": "Что переписывают?", "assumed": "ничего" }]
+}
+```
+
+- **cfg.intro** (agent) — In a project whose config has no `context`, before the
+  first `generate`: `node scripts/task.mjs --intro` prints what the scan found suspicious
+  and the questions. Ask them in one message — the suspects as a list with the
+  recommendation for each («исключить из каталога» / «это продукт»), then the open
+  questions: what else is not the product (mock-ups, demos, prototypes, special
+  projects); what is being rewritten and must not be an example; whether the designer takes requests
+  (no — when the person who designs is the one asking); what in this repository is not
+  as the code suggests. Write the answers: a suspect or a folder that is not the product
+  → `exclude`; a suspect that is the product → `context.kept`; the rest into `context`,
+  with today's date in `askedAt`. An answer «не знаю» — the person runs the skill but
+  does not own the product — does not stop the work: take your recommendation, write it
+  where the answer would go, and add `{ "question", "assumed" }` to `context.assumed`; the
+  question goes to the team in `questions.md`. When the team answers, put their answer in
+  its place and drop the item from `assumed`. Without a person in the chat, ask nothing: leave
+  `context` out and tell the user the catalog is built without it. *Only the agent:* the
+  answers are in a person's head, not in the code.
+- **cfg.context** (check) — A config without `context` is a warning that lists the
+  questions; with it, the fields are those above: `askedAt` a date, `branch` a branch
+  name, `kept` and `legacy[].match` globs that match files of the project, `legacy[].why`
+  not empty, `requests` one of `designer` and `none`, `notes` strings, `assumed` items with a
+  `question` and what was `assumed`; an item the team answered in `questions.md` and still
+  in `assumed` is a warning: put the answer in place. Anything else is
+  an error.
+- **cfg.suspects** (check) — A suspect the scan finds that is neither in `exclude`
+  nor in `context.kept` is a warning: asked once, answered once. Suspects are what is
+  rarely the product: a folder named `demo`, `demos`, `mock`, `mocks`, `design-mock`,
+  `proto`, `prototype`, `prototypes`, `playground`, `sandbox`, `specprojects`, `examples`
+  or `__mocks__` with stylesheets or components in it; a minified stylesheet (a line of
+  more than 2000 characters, or `*.min.css`).
+- **cfg.branch** (check) — When the project is a git repository and its current
+  branch is not `context.branch`, `check` warns: the catalog describes that branch, not
+  the main one. Without `context.branch` it says which branch the catalog was built from.
 
 ## What you leave as it is
 
@@ -52,7 +123,7 @@ is wrong for this project; what scripts write there, you do not edit.
   `tokens`, `icons`, `scopes`, `showcase`, `exclude`, `ignoreUnits`, `scaffold`,
   `labels`, `reference`, `issuesFile`, `brand`, `classPrefix`, `editor`, `frame`,
   `lang`, `typography`, `messages` (react: where the message files are), `stories`
-  (react: folders of the project's stories), `rejectPatterns`
+  (react: folders of the project's stories), `families` (react: [[cfg.families]]), `outside` ([[cfg.families-cover]]), `context` ([[cfg.context]]), `rejectPatterns`
   (react: candidates you rejected, `{ id, why }` — [[pat.review]]). Anything else (`accepted`, `decisions`, `hideTokenGroups`…) is an
   error, and so are leftovers of older formats in the library dir: `decisions.json`,
   `audit.json`, `issues/`.

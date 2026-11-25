@@ -2,7 +2,8 @@
 // ui-compose query — read a ui-catalog library without loading all of it.
 //   node query.mjs list                         one line per component
 //   node query.mjs search <words...>            rank components by the task you describe
-//   node query.mjs get <id> [<id>...]           full guideline + states + where it is used
+//   node query.mjs get <id> [<id>...] [--full]  kit: the card of an atom (--full: the whole spec); else the guideline
+//   node query.mjs screens [<file>]             the map of screens, or the family of one file
 //   node query.mjs requests                     open requests (gaps already reported)
 //   node query.mjs tokens [<filter>]            tokens with their roles; filter by name, kind or role
 //   [--dir <library dir>] [--root <project>]    default: <root>/docs/design-system
@@ -12,6 +13,7 @@ import path from 'node:path';
 const args = process.argv.slice(2);
 const opt = (name) => { const i = args.indexOf('--' + name); if (i < 0) return null; const v = args[i + 1]; args.splice(i, 2); return v; };
 const dirArg = opt('dir');
+const full = args.includes('--full') ? (args.splice(args.indexOf('--full'), 1), true) : false;
 const rootArg = opt('root');
 const [cmd = 'list', ...rest] = args;
 
@@ -30,6 +32,43 @@ function findLibrary() {
 const dir = findLibrary();
 const lib = JSON.parse(fs.readFileSync(path.join(dir, 'components.json'), 'utf8'));
 const read = (f) => { try { return fs.readFileSync(path.join(dir, f), 'utf8'); } catch { return ''; } };
+const sectionsOf = (text) => new Map(String(text).replace(/^---[\s\S]*?---\r?\n/, '').split(/^## /m).slice(1).map((p) => {
+  const nl = p.indexOf('\n');
+  return [p.slice(0, nl).trim(), p.slice(nl + 1).replace(/<!--[\s\S]*?-->\n*/g, '').trim()];
+}));
+const tick = (s) => '`' + s + '`';
+
+// The card of an atom: what a builder needs, not the migration map of the kit.
+function card(c) {
+  const s = sectionsOf(read(c.md));
+  const L = [`=== ${c.id} — ${c.name}: ${c.job}`];
+  for (const t of ['Когда использовать', 'Когда не использовать', 'Что брать сегодня', 'Поведение', 'Подводные камни']) if (s.has(t)) L.push('', `## ${t}`, '', s.get(t));
+  // The kit's API is the props only once the kit is built; before, today's props are above.
+  if (c.kit && !c.kit.error) {
+    L.push('', '## API', '');
+    for (const p of c.api || []) L.push(`- ${tick(p.prop)}${p.values ? `: ${p.values.join(' · ')}` : ''}${p.default ? ` (по умолчанию ${p.default})` : ''}`);
+  } else L.push('', 'API будущего кита — в get --full: кит ещё не построен, это не пропсы сегодняшних компонентов (они — в «Что брать сегодня»).');
+  if (s.has('Доступность')) L.push('', '## Доступность', '', s.get('Доступность'));
+  L.push('', `Открытых вопросов: ${c.openQuestions || 0}. Спека целиком (токены, что заменяет, вопросы): get ${c.id} --full — ${path.join(dir, c.md)}`);
+  return L.join('\n');
+}
+
+// A glob of the config as a regex: *, ** and ? as in catalog.config.json.
+const globRe = (g) => new RegExp('^' + g.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*\*\//g, '\u0001').replace(/\*\*/g, '\u0002').replace(/\*/g, '[^/]*').replace(/\?/g, '[^/]').replace(/\u0001/g, '(?:.*/)?').replace(/\u0002/g, '.*') + '$');
+
+// The family of a file by the families of the map, with what to look at first.
+function screensFor(file) {
+  const text = read('screens.md');
+  if (!text) return 'Карты экранов нет (screens.md): нужны families в catalog.config.json и node build.mjs.';
+  if (!file) return text;
+  const rel = String(file).replace(/\\/g, '/').replace(/^\.\//, '');
+  const fam = (lib.families || []).find((f) => f.match.some((g) => globRe(g).test(rel)));
+  const parts = text.split(/^## /m);
+  const before = `## ${parts.find((p) => p.startsWith('Перед тем как добавлять')) || ''}`.trim();
+  if (!fam) return `${rel} не входит ни в одну семью экранов. Семьи: ${(lib.families || []).map((f) => f.name).join(', ')}.\n\n${before}`;
+  const own = `## ${parts.find((p) => p.split('\n')[0].trim() === fam.name) || ''}`.trim();
+  return [`${rel} — семья «${fam.name}».`, '', before, '', own].join('\n');
+}
 const flags = (c) => [c.stale ? 'код изменился после описания' : null, c.todo ? `TODO×${c.todo}` : null].filter(Boolean);
 const line = (c) => `${c.id} | ${c.name} | ${c.job}` + (c.intents.length ? ` | теги: ${c.intents.join(', ')}` : '') + ` | ${c.usageCount} исп.` + (flags(c).length ? ` | ${flags(c).join(', ')}` : '');
 
@@ -94,6 +133,7 @@ switch (cmd) {
       const comp = !c && (lib.composites || []).find((x) => x.id === id);
       if (comp) { console.log(`=== ${comp.id} — составное (${path.join(dir, comp.md)})`); console.log(read(comp.md).replace(/^---[\s\S]*?---\n/, '')); continue; }
       if (!c) { console.log(`Нет компонента ${id}.`); continue; }
+      if (lib.mode === 'kit' && !full) { console.log(card(c) + '\n'); continue; }
       console.log(`=== ${c.id} (${path.join(dir, c.md)})`);
       if (flags(c).length) console.log(`!! ${flags(c).join(', ')} — гайдлайн может быть неполным, сверься с CSS`);
       console.log(read(c.md).replace(/^---[\s\S]*?---\n/, ''));
@@ -107,6 +147,9 @@ switch (cmd) {
       if (ex) console.log(`Примеры разметки: ${path.join(dir, 'examples', c.id + '.html')}`);
       console.log('');
     }
+    break;
+  case 'screens':
+    console.log(screensFor(rest[0]));
     break;
   case 'requests': {
     const open = (lib.requests || []).filter((r) => r.status !== 'closed');
@@ -126,6 +169,6 @@ switch (cmd) {
     break;
   }
   default:
-    console.log('Команды: list | search <слова> | get <id> | requests | tokens [фильтр]');
+    console.log('Команды: list | search <слова> | get <id> [--full] | screens [файл] | requests | tokens [фильтр]');
     process.exitCode = 2;
 }

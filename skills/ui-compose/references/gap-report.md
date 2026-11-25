@@ -80,9 +80,11 @@ needs: [achievement-badge, gm-btn--icon-right, gm-icon--award]
   «расширение», «нет», «токен», «раскладка». «Чем сделано» names components as JSX in
   backticks — `<Button variant="secondary">` — and the check recomputes each with
   `node scripts/compose.mjs verdict`; a «в спеке» row also names what stands in
-  meanwhile; a «закономерность» row names the composite id in backticks; a расширение
-  or нет row names what stands in meanwhile as JSX in backticks («в ките» or «в спеке»)
-  or says `временно ничего`. A need for a
+  meanwhile; a «закономерность» row names at least one composite id in backticks (other
+  code in backticks — tokens, classes — is allowed and not taken for an id); a расширение
+  or нет row names what stands in meanwhile as JSX in backticks («в ките» or «в спеке»,
+  or «как есть» when the verdict takes it in a new place — an item on review
+  [[gap.flagged]]) or says `временно ничего`. A need for a
   value is `<atom id>--<value>` (`button--xxl`) of kind *вариант <atom id>*; a value the
   API has is not a gap.
 
@@ -102,19 +104,36 @@ needs: [achievement-badge, gm-btn--icon-right, gm-icon--award]
   what stands there now). Optional: **Что должен уметь:**, **Предложение по API**
   (решает дизайнер) — a suggestion, never a design passed off as the answer.
 - **gap.placeholder** (check) — A placeholder in code says what it waits for and where
-  the request is — its path from the project root, wherever the library lives
-  (`docs/design-system/requests/achievements.md`; a library next to the project:
-  `../ds-web/requests/achievements.md`): `<!-- ui-compose: временно, ждёт
+  the request is — its path from the project root (the `--root` the library is built
+  with), wherever the library lives (`docs/design-system/requests/achievements.md`; a
+  library next to the project: `../ds-web/requests/achievements.md`; further up:
+  `../../../../../ds-web/requests/achievements.md`): `<!-- ui-compose: временно, ждёт
   achievement-badge — docs/design-system/requests/achievements.md -->`. `ui-catalog
   check` warns when the path does not lead to the request, the request does not exist,
   the need is not in its `needs`, or the request is closed (the component is ready:
   replace the placeholder).
+- **gap.no-requests** (check) — When the library's config says `context.requests:
+  none` (no designer takes requests — the person who designs is the one asking), a gap
+  is not written to `requests/`: tell it to the user in the answer — the need id, kind,
+  what stands in meanwhile — and leave the placeholder comment without a path. A request
+  file in such a library is an error.
 - **gap.existing** (check) — What the screen already has is not a gap. A job done today
   by a component in that place — one the library does not describe, or with a prop the
   spec drops — gets no need, no request and no placeholder when the task keeps it: its
   row is «как есть», with the JSX (or classes) as the code has them, and `compose.mjs
-  verdict` must say «как есть» for it. «как есть» never stands in for a gap: in a new
-  place the same component is a gap like any other.
+  verdict` must say «как есть» for it. In a new place, what the code has is taken by
+  [[gap.flagged]].
+- **gap.flagged** (script: compose.mjs#reviewVerdict) — What the code has outside the
+  API is taken by its review status (decision of 2026-11-23), and the verdict prints it:
+  no mark — take it, no request; a mark, not yet answered — where it already stands it
+  stays («как есть»); in a new place take the family's implementation without a mark
+  that does the job, and when there is none, take the marked one and say to the
+  developer in one line that it is on review (the question's part and number) — no
+  request either way; answered «оставить» — take it; answered «убрать» — it stays only
+  where it stands, and in a new place it is a gap like any other (a request, kind
+  вариант or новый компонент). A value on review — a question «только у одной
+  реализации» — is taken the same way: recommended «убрать», it counts as marked
+  «редкое»; recommended «оставить», as clean; answered «слить с X» — X.
 - **gap.layout-precedent** (agent) — Glue around library components that the product
   already writes in feature code in two places or more — a label over a control that
   has none, a hint under it — is «раскладка»: build it as those places do and name
